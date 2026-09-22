@@ -1,0 +1,31 @@
+# ---- 用户数据：绝不入仓库 ----
+# 照片、数据库、手机令牌都在这里，是使用者的实验数据
+data/
+*.db
+*.db-journal
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+
+# ---- 编辑器/系统 ----
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+*.swp
+*~
+
+# ---- 运行时 ----
+*.log
+logs/
+
+# ---- 分析/调试临时产物 ----
+_ana_*.png
+_analysis_*.png
+_ana/

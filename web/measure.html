@@ -1,0 +1,2263 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>晶体长度测量</title>
+<style>
+:root {
+  --ink:    #17150f;   /* 页面底色：暖石墨，不是纯黑 */
+  --panel:  #1f1c16;
+  --raise:  #2a261d;
+  --rule:   #37322a;
+  --text:   #ede8de;   /* 暖白，呼应照片里液滴的高光 */
+  --mute:   #9a9284;
+  --faint:  #8a8276;   /* 提到 4.6:1，暗底上也能读 */
+  --ref:    #e0a63c;   /* 唯一的强调色，只给按钮和焦点 */
+  --ui:   "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+  --num:  Consolas, "Cascadia Mono", ui-monospace, monospace;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  font: 13px/1.6 var(--ui);
+  background: var(--ink); color: var(--text);
+  display: flex; flex-direction: column; overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- 顶栏 ---------- */
+header {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 12px;
+  padding: 0 16px; height: 46px;
+  background: var(--panel); border-bottom: 1px solid var(--rule);
+}
+.brand { font-weight: 600; letter-spacing: .01em; white-space: nowrap; }
+.brand span { color: var(--faint); font-weight: 400; margin-left: 8px; }
+
+select {
+  font: 13px var(--ui); color: var(--text); background: var(--raise);
+  border: 1px solid var(--rule); border-radius: 3px;
+  padding: 5px 8px; max-width: 420px;
+}
+select:hover { border-color: #4a4438; }
+
+button {
+  font: 13px var(--ui); color: var(--text); background: var(--raise);
+  border: 1px solid var(--rule); border-radius: 3px;
+  padding: 5px 12px; cursor: pointer;
+}
+button:hover:not(:disabled) { background: #34301f; border-color: #4a4438; }
+button:disabled { opacity: .38; cursor: default; }
+button.primary { background: var(--ref); border-color: var(--ref); color: #241c08; font-weight: 600; }
+button.primary:hover:not(:disabled) { background: #efb452; border-color: #efb452; }
+select:focus-visible, button:focus-visible, input:focus-visible {
+  outline: 2px solid var(--ref); outline-offset: 1px; border-color: var(--ref);
+}
+
+#status { margin-left: auto; color: var(--mute); font-size: 12.5px; }
+#status.err { color: #e8746a; }
+
+/* ---------- 主区 ---------- */
+main { flex: 1 1 auto; display: flex; min-height: 0; }
+
+#stage { flex: 1 1 auto; position: relative; min-width: 0; background: #0d0c09; }
+#cv { display: block; touch-action: none; cursor: crosshair; }
+
+#empty {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 10px;
+  text-align: center; padding: 0 40px; pointer-events: none;
+}
+#empty h2 { font-size: 17px; font-weight: 600; margin: 0; color: var(--text); }
+#empty p { margin: 0; color: var(--faint); max-width: 42ch; line-height: 1.85; }
+/* display:flex 会盖掉浏览器给 [hidden] 的 display:none，必须显式补一条 */
+#empty[hidden] { display: none; }
+kbd {
+  font: 12px var(--num); color: var(--mute);
+  background: var(--panel); border: 1px solid var(--rule);
+  border-radius: 3px; padding: 1px 5px;
+}
+/* 侧栏底色就是 --panel，键帽得提亮一档才看得出来 */
+aside kbd { background: var(--raise); }
+.keys { margin: 12px 0 0; color: var(--faint); line-height: 2.2; }
+.keys kbd { margin: 0 1px; }
+
+/* ---------- 侧栏 ---------- */
+aside {
+  flex: 0 0 348px; background: var(--panel); border-left: 1px solid var(--rule);
+  overflow-y: auto; overscroll-behavior: contain;
+}
+aside section { padding: 16px 18px; border-bottom: 1px solid var(--rule); }
+aside section:last-child { border-bottom: 0; }
+aside h2 {
+  font-size: 12px; font-weight: 600; letter-spacing: .06em;
+  color: var(--mute); margin: 0 0 12px;
+}
+aside h2 .n { color: var(--faint); font-weight: 400; letter-spacing: 0; margin-left: 6px; }
+.hint { color: var(--faint); margin: 0 0 12px; line-height: 1.8; }
+.hint b { color: var(--mute); font-weight: 600; }
+/* 警示色的提示（和顶栏状态条的 #status.err 同一个颜色） */
+.hint.warn { color: #e8746a; }
+
+/* 比例尺读数 */
+.readout { display: flex; align-items: baseline; gap: 8px; }
+.readout output { font: 600 27px/1 var(--num); font-variant-numeric: tabular-nums; }
+.readout em { font-style: normal; color: var(--mute); font-size: 12.5px; }
+.basis { margin: 9px 0 0; color: var(--faint); font-family: var(--num); font-size: 12px; }
+
+/* 输入行 */
+.field { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
+.field label { flex: 1 1 auto; color: var(--mute); }
+.field input {
+  width: 92px; text-align: right;
+  font: 13px var(--num); font-variant-numeric: tabular-nums;
+  color: var(--text); background: var(--raise);
+  border: 1px solid var(--rule); border-radius: 3px; padding: 4px 8px;
+}
+.field input:disabled { opacity: .38; }
+.field .unit { width: 18px; color: var(--faint); font-size: 12px; }
+
+/* 控制点图例 */
+.legend { list-style: none; margin: 14px 0 0; padding: 12px 0 0; border-top: 1px solid var(--rule); }
+.legend li { display: flex; align-items: center; gap: 9px; color: var(--faint); padding: 3px 0; }
+.legend i { flex: 0 0 auto; width: 13px; height: 13px; display: block; position: relative; }
+.legend .h-cross { background:
+  linear-gradient(#fff, #fff) center / 13px 2px no-repeat,
+  linear-gradient(#fff, #fff) center / 2px 13px no-repeat; }
+.legend .h-big::after, .legend .h-small::after, .legend .h-rot::after {
+  content: ''; position: absolute; inset: 0; margin: auto; border-radius: 50%;
+  border: 2px solid #fff;
+}
+.legend .h-big::after   { width: 11px; height: 11px; background: #fff; }
+.legend .h-small::after { width: 7px;  height: 7px;  background: #fff; }
+.legend .h-rot::after   { width: 9px;  height: 9px;  }
+
+/* 测量记录 */
+#lines { list-style: none; margin: 0; padding: 0; }
+#lines li {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 0; border-bottom: 1px solid var(--rule);
+}
+#lines li:last-child { border-bottom: 0; }
+#lines .swatch { flex: 0 0 auto; width: 3px; height: 22px; border-radius: 2px; }
+#lines .val {
+  flex: 0 0 auto; width: 78px;
+  font: 600 14px var(--num); font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+#lines input {
+  flex: 1 1 auto; min-width: 0;
+  font: 12.5px var(--ui); color: var(--text); background: transparent;
+  border: 1px solid transparent; border-radius: 3px; padding: 3px 6px;
+}
+#lines input:hover { border-color: var(--rule); }
+#lines input:focus { background: var(--raise); border-color: var(--ref); outline: none; }
+#lines .del {
+  flex: 0 0 auto; padding: 2px 6px; font-size: 13px; line-height: 1.2;
+  color: var(--faint); background: transparent; border-color: transparent;
+}
+#lines .del:hover { color: #e8746a; background: transparent; border-color: transparent; }
+.none { color: var(--faint); margin: 0; }
+
+.actions { display: flex; gap: 8px; margin-top: 14px; }
+.actions button { flex: 1 1 0; }
+
+/* 画质调整滑块 */
+.slider {
+  display: grid; grid-template-columns: 50px 1fr 42px;
+  align-items: center; gap: 10px; margin: 11px 0;
+}
+.slider label { color: var(--mute); }
+.slider input[type=range] { width: 100%; height: 16px; margin: 0; accent-color: var(--ref); }
+.slider output {
+  font: 12.5px var(--num); font-variant-numeric: tabular-nums;
+  color: var(--text); text-align: right;
+}
+.full { width: 100%; margin-top: 8px; }
+
+/* 导出面板 */
+.field select { flex: 0 0 60%; width: auto; min-width: 0; }
+.chk { display: flex; align-items: center; gap: 8px; margin: 9px 0; color: var(--mute); cursor: pointer; }
+.chk input { width: 14px; height: 14px; margin: 0; accent-color: var(--ref); }
+.chk:first-of-type { margin-top: 0; }
+.row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 4px; }
+.row .chk { margin: 0; }
+.mini { padding: 2px 8px; font-size: 12px; color: var(--mute); }
+
+@media (prefers-reduced-motion: no-preference) {
+  #lines li { transition: background .12s ease; }
+  #lines li:hover { background: #24211a; margin: 0 -8px; padding-left: 8px; padding-right: 8px; }
+}
+
+/* 照片管理 */
+aside section[hidden] { display: none; }  /* 面板里一旦用了 flex，hidden 就藏不住了 */
+#curName { color: var(--text); font-size: 14px; margin: 0 0 2px; word-break: break-all; }
+
+/* 拖拽时铺满整页的提示 —— 拖到哪儿都算数 */
+#drop { position: fixed; inset: 0; z-index: 50; display: none;
+        align-items: center; justify-content: center; text-align: center;
+        background: rgba(23, 21, 15, .86); border: 3px dashed var(--ref);
+        pointer-events: none; }
+body.dragging #drop { display: flex; }
+#drop h2 { color: var(--ref); font-size: 20px; margin: 0 0 6px; }
+#drop p { color: var(--mute); font-size: 13.5px; margin: 0; }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="brand">晶体长度测量<span>坐滴板单孔照片</span></span>
+  <button id="btnGallery" title="看所有照片，点一张进来量">图库</button>
+  <select id="picker" aria-label="选择照片"><option>正在读取照片列表…</option></select>
+  <button id="btnOpen" class="primary">打开</button>
+  <span id="scope" hidden>
+    <span id="scopeText"></span>
+    <button id="scopeAll" class="mini" type="button">看全部</button>
+  </span>
+  <span id="status" role="status">先选一张照片</span>
+</header>
+
+<main>
+  <div id="stage">
+    <canvas id="cv"></canvas>
+    <div id="empty">
+      <h2>先打开一张孔的照片</h2>
+      <p>
+        点上面的<b>「图库」</b>挑一张照片进来量；也可以直接把照片<b>拖到这块画布上</b>，
+        或者按 <kbd>Ctrl</kbd>+<kbd>V</kbd> 粘贴一张。<br>
+        工具会先猜一个粗略的圆，请自己拖准。这个圆就是孔径
+        <span class="wellMm">3.4</span>&nbsp;mm 的基准。
+        定好圆之后，在图上拖线量晶体，长度会自动算出来。
+      </p>
+    </div>
+  </div>
+
+  <aside>
+    <section>
+      <h2>比例尺</h2>
+      <div class="readout">
+        <output id="umpp">—</output><em>μm / 像素</em>
+      </div>
+      <p class="basis" id="basis">还没有定圆</p>
+    </section>
+
+    <section>
+      <h2>点样孔直径</h2>
+      <p class="hint">
+        不同厂家的坐滴板，孔径不一样大。工具靠这个数把<b>你圈的那个圆</b>换算成
+        真实长度 —— 填错了，量出来的每个数都会跟着错。<br>
+        按你手上那块板的规格填。改完<b>只影响以后新定圆的照片</b>；想让某张老照片
+        也用上新数，把那张图的圆重新拖一下就行。
+      </p>
+      <div class="field">
+        <label for="inWell">孔径</label>
+        <input id="inWell" type="number" step="0.1" min="0.1" inputmode="decimal">
+        <span class="unit">mm</span>
+      </div>
+      <div class="actions">
+        <button id="wellReset" type="button">恢复默认</button>
+      </div>
+      <p class="hint" id="wellHint"></p>
+    </section>
+
+    <section>
+      <h2>定圆（孔径 <span class="wellMm">3.4</span> mm 的基准）</h2>
+      <p class="hint">
+        拖动圆上的白色控制点。孔拍成正圆就保持长短轴相等；拍斜了就拉成椭圆。
+        <b>比例尺只认长轴。</b>
+      </p>
+      <div class="field"><label for="inA">长轴直径</label><input id="inA" type="number" step="0.5" disabled><span class="unit">px</span></div>
+      <div class="field"><label for="inB">短轴直径</label><input id="inB" type="number" step="0.5" disabled><span class="unit">px</span></div>
+      <div class="field"><label for="inT">倾角</label><input id="inT" type="number" step="0.5" disabled><span class="unit">°</span></div>
+      <ul class="legend">
+        <li><i class="h-cross"></i>十字：整体移动</li>
+        <li><i class="h-big"></i>大点：改长轴</li>
+        <li><i class="h-small"></i>小点：改短轴（只拖一个就成椭圆）</li>
+        <li><i class="h-rot"></i>空心点：旋转</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>画质调整</h2>
+      <p class="hint">
+        只影响<b>看起来的样子</b>和导出的图片。<b>不改原图，也不影响测量数值。</b>
+      </p>
+      <div class="slider">
+        <label for="enB">亮度</label>
+        <input id="enB" type="range" min="0.5" max="2" step="0.01" value="1" disabled>
+        <output id="enBv">1.00</output>
+      </div>
+      <div class="slider">
+        <label for="enC">对比度</label>
+        <input id="enC" type="range" min="0.5" max="2.5" step="0.01" value="1" disabled>
+        <output id="enCv">1.00</output>
+      </div>
+      <div class="slider">
+        <label for="enS">饱和度</label>
+        <input id="enS" type="range" min="0" max="2" step="0.01" value="1" disabled>
+        <output id="enSv">1.00</output>
+      </div>
+      <div class="actions">
+        <button id="enAuto" disabled>自动调</button>
+        <button id="enReset" disabled>还原</button>
+      </div>
+      <button id="enHold" class="full" disabled>按住这里看原图</button>
+    </section>
+
+    <section>
+      <h2>测量记录<span class="n" id="cnt">0 条</span></h2>
+      <p class="hint">
+        在图上按住拖一条线，松手就记下。<br>
+        滚轮缩放 · 按住中键（或右键）拖动挪照片 · 双击复位
+      </p>
+      <ol id="lines"></ol>
+      <p class="keys">
+        <kbd>Ctrl</kbd> + 左键拖长度数字 → 挪开标签<br>
+        <kbd>Ctrl</kbd>+<kbd>Z</kbd> 撤销 · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> 重做
+      </p>
+      <div class="actions">
+        <button id="btnUndo" disabled>撤销</button>
+        <button id="btnClear" disabled>清空</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>导出</h2>
+      <p class="hint">
+        照片是为拍到孔放宽了取景的，导出时可以裁到晶体周围。
+        <b>标尺一定会保留</b> —— 没有标尺的图别人没法判断大小。
+      </p>
+      <div class="row">
+        <label class="chk"><input type="checkbox" id="exSelect"> 裁剪</label>
+        <button id="btnApplyCrop" class="mini" disabled>裁好了</button>
+        <button id="btnResetCrop" class="mini" disabled>回到原图</button>
+      </div>
+      <p class="hint" id="cropTip" hidden>
+        打开后圆圈等辅助线会藏起来，这样你看到的就是裁完的样子。
+        在图上按住左键拖出要保留的范围，拖框上的白点改大小，满意了点「裁好了」。
+      </p>
+      <p class="hint warn" id="cropWarn" hidden>
+        裁完看不到标定用的那个圆了。要重新标定，先点「回到原图」。
+      </p>
+      <div class="field"><label for="exCrop">快速裁剪</label><select id="exCrop"></select></div>
+      <div class="field"><label for="exScale">标尺位置</label>
+        <select id="exScale">
+          <option value="br">右下</option><option value="bl">左下</option>
+          <option value="tr">右上</option><option value="tl">左上</option>
+        </select>
+      </div>
+      <div class="field"><label for="exSuper">输出倍率</label>
+        <select id="exSuper">
+          <option value="1">1×（原尺寸）</option>
+          <option value="2" selected>2×（推荐）</option>
+          <option value="4">4×</option>
+        </select>
+      </div>
+      <label class="chk"><input type="checkbox" id="exSeq"> 显示测量编号</label>
+      <label class="chk"><input type="checkbox" id="exNotes"> 显示备注文字</label>
+      <div class="actions">
+        <button id="btnExportPng" class="primary" disabled>导出图片</button>
+        <button id="btnExportCsv" disabled>导出表格</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>这张照片</h2>
+      <p id="curName" class="none">还没打开照片</p>
+      <div class="actions">
+        <button id="btnRename" disabled>改名</button>
+        <button id="btnDelete" disabled>删除</button>
+      </div>
+      <p class="hint">
+        删除不会真的抹掉照片 —— 文件会挪到 <code>data\trash\</code> 里。
+        但<b>这张图上画的测量记录会一起删掉，撤不回来</b>。
+      </p>
+    </section>
+  </aside>
+</main>
+
+<div id="drop">
+  <div>
+    <h2>松手就导入</h2>
+    <p>支持 JPG / PNG / TIF / BMP，可以一次拖好几张</p>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+// ---------- 状态 ----------
+const S = {
+  imageId: null, W: 0, H: 0,
+  scope: '',             // 下拉框的范围：'' = 全部，'0' = 未分类，其余 = 文件夹 id
+  view: { s: 1, tx: 0, ty: 0 },
+  fit: 0,                // "整张适应屏幕"的缩放值，缩放的上下限以它为基准
+  circle: null,          // {cx, cy, a, b, th}   a=长半轴 b=短半轴 th=倾角(弧度)
+  umpp: null,            // μm / 原图像素
+  lines: [],
+  crop: null,            // 框选出来的导出区域 {x0,y0,x1,y1}，原图坐标
+  barXY: null,           // 用户拖过的标尺位置（右端点，原图坐标）；null=默认角落
+  enh: { b: 1, c: 1, s: 1 },   // 画质调整：亮度/对比度/饱和度，1 = 原样
+  enhHold: false,        // 按住「看原图」时为 true
+};
+let cropMode = false;    // 是否正在调裁剪框（临时状态，不是事实）
+let cropUndo = null;     // 进裁剪模式前的框。没点「裁好了」就退出时用它还原
+
+// 刷新要回到原样（用户把刷新当"卡住了的恢复手段"）。
+// 圆/线/标尺/标签本来就在库里，这里只管界面上那些没入库的东西。
+const SESSION_KEY = 'jltx.session';
+let sessionTimer = null;
+// 点样孔直径（μm）。**不是写死的 3400** —— 别人手上的板子孔不一样大。
+// 页面启动时从 /api/settings 读，用户在侧栏改了就地更新。
+// 真正说了算的是后端：存圆的时候后端按它自己的设置算 um_per_px 再回传
+// （saveCircle 里那句 S.umpp = d.um_per_px），这里的值只负责"拖动时屏幕上的
+// 数字实时跟着动"。两处必须一致，否则拖的时候显示一个数、松手跳成另一个数。
+let WELL_DIAMETER_UM = 3400;
+const MIN_SEMI = 8;      // 半轴下限（原图像素），防止拖成一条线
+const HANDLE_R = 12;     // 控制点命中半径（屏幕像素）
+const CROP_R = 11;       // 框选控制点的命中半径
+const MIN_CROP_PX = 24;  // 裁剪框最小边长（屏幕像素），别让它塌成一条线
+const INK = '#0b0a08';   // 描边打底色：保证白色图形在亮液滴上也看得见
+const LABEL_LIFT = 20;   // 长度标签默认抬到线段上方这么多屏幕像素，别压住线
+const LABEL_PAD = 10;    // 选中框比文字宽出多少（留够深色描边的量）
+
+const img = new Image();
+const cv = document.getElementById('cv');
+let ctx = cv.getContext('2d');   // 可换：导出时临时指向离屏画布
+const stage = document.getElementById('stage');
+const $ = id => document.getElementById(id);
+
+let CW = 0, CH = 0, dpr = 1;
+
+// ---------- 导出时的放大 ----------
+// 用户的原话：「我框选这个区域就是你导出的画面」。所以导出**不另写一套渲染**，
+// 而是把下面这些绘制代码原样放大重跑一遍 —— 页面上是什么样，导出就是什么样，
+// 不存在"两套渲染对不上"这回事（之前就是这么错的：颜色、字体、线宽、刻度形状
+// 一路修了四轮还是对不上）。
+//
+// UIZ = 界面放大倍数。屏幕上 1 像素，在导出图里占 UIZ 个像素。
+// 所有**画出来**的尺寸（线宽、字号、抬升、刻度）都要过 uz()；
+// 而**点得到吗**的判定半径（HANDLE_R / CROP_R）不用 —— 那是鼠标的事。
+let UIZ = 1;
+const uz = n => n * UIZ;
+let EXPORTING = false;   // 导出中：不画基准圆、不画框选遮罩
+let EXPORT_W = 0;        // 导出区域的原图像素宽（挑标尺长度要用）
+
+// ---------- 坐标换算（视图 = 等比缩放 + 平移，无旋转） ----------
+const toS = (x, y) => [x * S.view.s + S.view.tx, y * S.view.s + S.view.ty];
+const toI = (sx, sy) => [(sx - S.view.tx) / S.view.s, (sy - S.view.ty) / S.view.s];
+
+function localPos(e) {
+  const r = cv.getBoundingClientRect();
+  return [e.clientX - r.left, e.clientY - r.top];
+}
+
+// ---------- 画布尺寸 ----------
+function resize() {
+  dpr = window.devicePixelRatio || 1;
+  const r = stage.getBoundingClientRect();
+  CW = Math.max(1, Math.floor(r.width));
+  CH = Math.max(1, Math.floor(r.height));
+  cv.width = Math.floor(CW * dpr);
+  cv.height = Math.floor(CH * dpr);
+  cv.style.width = CW + 'px';
+  cv.style.height = CH + 'px';
+  render();
+}
+window.addEventListener('resize', resize);
+
+function fitView() {
+  if (!S.W) return;
+  const r = viewRegion();
+  const w = r.x1 - r.x0, h = r.y1 - r.y0;
+  const pad = 28;
+  const s = Math.min((CW - pad) / w, (CH - pad) / h);
+  S.view.s = s > 0 ? s : 1;
+  S.fit = S.view.s;                       // 缩放的上下限以它为基准
+  S.view.tx = (CW - w * S.view.s) / 2 - r.x0 * S.view.s;
+  S.view.ty = (CH - h * S.view.s) / 2 - r.y0 * S.view.s;
+}
+
+// ---------- 控制点位置（屏幕坐标） ----------
+function handlePoints() {
+  const c = S.circle;
+  if (!c) return null;
+  const [ox, oy] = toS(c.cx, c.cy);
+  const ax = c.a * S.view.s, by = c.b * S.view.s;
+  const ux = [Math.cos(c.th), Math.sin(c.th)];     // 长轴方向
+  const uy = [-Math.sin(c.th), Math.cos(c.th)];    // 短轴方向
+  const rot = Math.max(by + 44, 56);               // 旋转点至少离圆心 56px，免得叠在一起
+  return {
+    center: [ox, oy],
+    aP: [ox + ux[0] * ax, oy + ux[1] * ax],
+    aM: [ox - ux[0] * ax, oy - ux[1] * ax],
+    bP: [ox + uy[0] * by, oy + uy[1] * by],
+    bM: [ox - uy[0] * by, oy - uy[1] * by],
+    rot: [ox + uy[0] * rot, oy + uy[1] * rot],
+  };
+}
+
+function hitTest(p) {
+  const P = handlePoints();
+  if (!P) return null;
+  let best = null, bd = HANDLE_R;
+  for (const k of ['rot', 'aP', 'aM', 'bP', 'bM', 'center']) {
+    const d = Math.hypot(p[0] - P[k][0], p[1] - P[k][1]);
+    if (d <= bd) { bd = d; best = k; }
+  }
+  return best;      // 取最近的一个，圆很小时控制点会互相压住
+}
+
+// ---------- 绘制 ----------
+// 所有图形先描一遍深色粗边再描本色 —— 照片亮处暗处都能看清
+function halo(path, color, width) {
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.strokeStyle = INK; ctx.lineWidth = uz(width + 3.5); path(); ctx.stroke();
+  ctx.strokeStyle = color; ctx.lineWidth = uz(width); path(); ctx.stroke();
+}
+
+// 画布上显示的是哪一块（原图坐标）。
+// 调裁剪框时永远是整张 —— 得看得见自己在切掉什么。
+function viewRegion() {
+  if (cropMode || !S.crop) return { x0: 0, y0: 0, x1: S.W, y1: S.H };
+  return S.crop;
+}
+
+function render() {
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, CW, CH);
+
+  if (S.W) {
+    const r = viewRegion();
+    ctx.save();
+    ctx.translate(S.view.tx, S.view.ty);
+    ctx.scale(S.view.s, S.view.s);
+    ctx.filter = enhFilter();     // 只管这张照片；restore 会把滤镜一起还原，线/圆不受影响
+    // 目标矩形写死成原图坐标：拖滑块时烘的那张是缩小版，
+    // 写成 drawImage(src, 0, 0) 就会按缩小版的尺寸画，整个坐标系错位。
+    // 源矩形要换算到"这张源图自己的像素空间"（缩小版 ≠ 原图坐标），
+    // 只不过源和目标算的是同一块 —— 坐标系一点没变，只是框外的不画而已。
+    const src = photoSrc();
+    const kx = (src.naturalWidth || src.width) / S.W;
+    const ky = (src.naturalHeight || src.height) / S.H;
+    ctx.drawImage(src, r.x0 * kx, r.y0 * ky, (r.x1 - r.x0) * kx, (r.y1 - r.y0) * ky,
+                       r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
+    ctx.restore();
+  }
+
+  drawLines();
+  drawPending();
+  // 框选模式下把圆的那些辅助元素全藏起来 —— 只留测量线和长度数字，
+  // 这样你看到的就是导出图大致的样子。导出时同理（基准圆不该进图）。
+  if (!cropMode && !EXPORTING) drawCircle();
+  if (cropMode && !EXPORTING) drawCrop();
+  drawScaleBar();
+
+  scheduleSave();          // 视图变了就记一笔，刷新能回到原样
+}
+
+function dot(p, r, fill, ring) {
+  ctx.beginPath(); ctx.arc(p[0], p[1], uz(r), 0, Math.PI * 2);
+  ctx.fillStyle = fill; ctx.fill();
+  ctx.lineWidth = uz(ring || 0); ctx.strokeStyle = INK;
+  if (ring) ctx.stroke();
+}
+
+// 字号只取一次。label() 和 labelBox() 必须用同一个 font，
+// 否则量出来的宽度和画出来的对不上，选中框就会错位。
+const FONT_PX = 13;
+let _fontPx = 0, _font = '';
+function labelFont() {
+  const px = uz(FONT_PX);
+  if (px !== _fontPx) {
+    _fontPx = px;
+    _font = `600 ${px}px ` + getComputedStyle(document.body).getPropertyValue('--num');
+  }
+  return _font;
+}
+
+function label(text, x, y, color, align) {
+  ctx.font = labelFont();
+  ctx.textAlign = align || 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = uz(4); ctx.strokeStyle = INK; ctx.strokeText(text, x, y);
+  ctx.fillStyle = color; ctx.fillText(text, x, y);
+}
+
+// ---------- 长度标签的位置 ----------
+// 偏移量存的是**原图像素**，不是屏幕像素：标签是贴在照片上的，
+// 放大缩小时它应该跟着照片走。
+function labelScreen(L) {
+  const [mx, my] = toS((L.x1 + L.x2) / 2, (L.y1 + L.y2) / 2);
+  return [mx + (L.label_dx || 0) * S.view.s,
+          my + (L.label_dy || 0) * S.view.s - uz(LABEL_LIFT)];
+}
+
+function labelBox(L) {
+  const [x, y] = labelScreen(L);
+  ctx.font = labelFont();
+  const w = ctx.measureText(fmtLen(lineUm(L))).width;
+  return { x, y, w: w + uz(LABEL_PAD) * 2, h: uz(26) };
+}
+
+// 从后往前找：后画的压在上面，命中的该是看得见的那一个
+function hitLabel(p) {
+  for (let i = S.lines.length - 1; i >= 0; i--) {
+    const b = labelBox(S.lines[i]);
+    if (Math.abs(p[0] - b.x) <= b.w / 2 && Math.abs(p[1] - b.y) <= b.h / 2) {
+      return S.lines[i];
+    }
+  }
+  return null;
+}
+
+function drawLines() {
+  const picking = ctrlDown;    // 按住 Ctrl 才把标签框出来，平时不打扰
+  for (const L of S.lines) {
+    const p1 = toS(L.x1, L.y1), p2 = toS(L.x2, L.y2);
+    halo(() => { ctx.beginPath(); ctx.moveTo(p1[0], p1[1]); ctx.lineTo(p2[0], p2[1]); },
+         L.color, 3);
+    dot(p1, 4.5, L.color, 2.5);
+    dot(p2, 4.5, L.color, 2.5);
+
+    const b = labelBox(L);
+    if (picking) {
+      const on = L === hoverLabel || (drag && drag.kind === 'label' && drag.line === L);
+      ctx.save();
+      ctx.setLineDash(on ? [] : [4, 3]);
+      const x = b.x - b.w / 2, y = b.y - b.h / 2;
+      // 和画布上其他图形一样先描深色粗边 —— 细白虚线在花花的照片上根本看不见
+      ctx.strokeStyle = INK; ctx.lineWidth = on ? 5 : 4;
+      ctx.strokeRect(x, y, b.w, b.h);
+      ctx.strokeStyle = on ? '#ffffff' : 'rgba(255,255,255,.78)';
+      ctx.lineWidth = on ? 2 : 1.25;
+      ctx.strokeRect(x, y, b.w, b.h);
+      ctx.restore();
+    }
+    label(fmtLen(lineUm(L)), b.x, b.y, L.color);
+    // 编号和备注：勾上就在画布上画出来 —— 「看到的 = 导出的」，
+    // 不勾就是现在这个干净的样子
+    if (exportSeq.checked) {
+      label(`#${L.seq}`, p1[0] + uz(9), p1[1] - uz(9), L.color, 'left');
+    }
+    if (exportNotes.checked && L.note) {
+      label(L.note, p2[0] + uz(9), p2[1] + uz(9), '#ffffff', 'left');
+    }
+  }
+}
+
+// 导出面板上那两个勾选框。画布和导出共用它们，所以不会对不上。
+const exportSeq = document.getElementById('exSeq');
+const exportNotes = document.getElementById('exNotes');
+
+// ---------- 框选导出区域 ----------
+function normCrop(a, b) {
+  return { x0: Math.min(a[0], b[0]), y0: Math.min(a[1], b[1]),
+           x1: Math.max(a[0], b[0]), y1: Math.max(a[1], b[1]) };
+}
+
+const cropToScreen = c => [toS(c.x0, c.y0), toS(c.x1, c.y1)];
+
+// 四角 + 四边中点，一共 8 个可拖的点
+function cropHandles() {
+  if (!S.crop) return null;
+  const [[ax, ay], [bx, by]] = cropToScreen(S.crop);
+  const mx = (ax + bx) / 2, my = (ay + by) / 2;
+  return { nw: [ax, ay], n: [mx, ay], ne: [bx, ay],
+           w: [ax, my], e: [bx, my],
+           sw: [ax, by], s: [mx, by], se: [bx, by] };
+}
+
+function hitCropHandle(p) {
+  const H = cropHandles();
+  if (!H) return null;
+  let best = null, bd = CROP_R;
+  for (const k in H) {
+    const d = Math.hypot(p[0] - H[k][0], p[1] - H[k][1]);
+    if (d <= bd) { bd = d; best = k; }
+  }
+  return best;
+}
+
+function inCrop(p) {
+  if (!S.crop) return false;
+  const [[ax, ay], [bx, by]] = cropToScreen(S.crop);
+  return p[0] >= ax && p[0] <= bx && p[1] >= ay && p[1] <= by;
+}
+
+function resizeCrop(c, handle, ix, iy) {
+  const n = { ...c };
+  if (handle.includes('w')) n.x0 = ix;
+  if (handle.includes('e')) n.x1 = ix;
+  if (handle.includes('n')) n.y0 = iy;
+  if (handle.includes('s')) n.y1 = iy;
+  const min = MIN_CROP_PX / S.view.s;
+  if (n.x1 - n.x0 < min) {                       // 别让它拖塌成一条线
+    if (handle.includes('w')) n.x0 = n.x1 - min; else n.x1 = n.x0 + min;
+  }
+  if (n.y1 - n.y0 < min) {
+    if (handle.includes('n')) n.y0 = n.y1 - min; else n.y1 = n.y0 + min;
+  }
+  return n;
+}
+
+function drawCrop() {
+  if (!cropMode || !S.crop) return;
+  const [[ax, ay], [bx, by]] = cropToScreen(S.crop);
+
+  // 框外压暗 —— 一眼看出"这些不会被导出"
+  ctx.save();
+  ctx.fillStyle = 'rgba(10,9,7,.62)';
+  ctx.beginPath();
+  ctx.rect(0, 0, CW, CH);
+  ctx.rect(ax, ay, bx - ax, by - ay);
+  ctx.fill('evenodd');
+  ctx.restore();
+
+  ctx.save();
+  ctx.setLineDash([9, 6]);
+  ctx.strokeStyle = INK; ctx.lineWidth = 5;
+  ctx.strokeRect(ax, ay, bx - ax, by - ay);
+  ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2;
+  ctx.strokeRect(ax, ay, bx - ax, by - ay);
+  ctx.restore();
+
+  const H = cropHandles();
+  for (const k in H) dot(H[k], 5.5, '#ffffff', 2.5);
+}
+
+function drawPending() {
+  const d = drag;
+  if (!d || d.kind !== 'line') return;
+  const p1 = toS(d.x1, d.y1), p2 = toS(d.x2, d.y2);
+  const px = Math.hypot(d.x2 - d.x1, d.y2 - d.y1);
+
+  // 起点：手指一按下就画出来，让你看见"锚在这儿了"
+  halo(() => {
+    ctx.beginPath();
+    ctx.moveTo(p1[0] - 7, p1[1]); ctx.lineTo(p1[0] + 7, p1[1]);
+    ctx.moveTo(p1[0], p1[1] - 7); ctx.lineTo(p1[0], p1[1] + 7);
+  }, '#ffffff', 1.5);
+  if (px < 0.5) return;        // 还没拖动，只有锚点
+
+  ctx.save();
+  ctx.setLineDash([7, 5]);
+  halo(() => { ctx.beginPath(); ctx.moveTo(p1[0], p1[1]); ctx.lineTo(p2[0], p2[1]); },
+       '#ffffff', 2.5);
+  ctx.restore();
+  dot(p2, 4.5, '#ffffff', 2.5);
+
+  if (S.umpp) {
+    label(fmtLen(px * S.umpp), (p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2 - 20, '#ffffff');
+  }
+}
+
+function drawCircle() {
+  const c = S.circle;
+  if (!c) return;
+  const [ox, oy] = toS(c.cx, c.cy);
+  const ax = c.a * S.view.s, by = c.b * S.view.s;
+
+  // 参考圆：无色白线 —— 页面上的颜色只留给"你量的东西"
+  halo(() => { ctx.beginPath(); ctx.ellipse(ox, oy, ax, by, c.th, 0, Math.PI * 2); },
+       '#ffffff', 2.5);
+
+  const P = handlePoints();
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(P.aM[0], P.aM[1]); ctx.lineTo(P.aP[0], P.aP[1]);
+  ctx.moveTo(P.bM[0], P.bM[1]); ctx.lineTo(P.bP[0], P.bP[1]);
+  ctx.strokeStyle = 'rgba(255,255,255,.45)'; ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.restore();
+
+  dot(P.bP, 5.5, '#fff', 2.5);
+  dot(P.bM, 5.5, '#fff', 2.5);
+  dot(P.aP, 7.5, '#fff', 2.5);
+  dot(P.aM, 7.5, '#fff', 2.5);
+  // 旋转点画成空心的，形状就能和两个实心大小点区分开，不用靠颜色
+  ctx.beginPath(); ctx.arc(P.rot[0], P.rot[1], 6.5, 0, Math.PI * 2);
+  ctx.fillStyle = INK; ctx.fill();
+  ctx.lineWidth = 2.5; ctx.strokeStyle = '#fff'; ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(P.center[0] - 11, P.center[1]); ctx.lineTo(P.center[0] + 11, P.center[1]);
+  ctx.moveTo(P.center[0], P.center[1] - 11); ctx.lineTo(P.center[0], P.center[1] + 11);
+  ctx.lineWidth = 4.5; ctx.strokeStyle = INK; ctx.stroke();
+  ctx.lineWidth = 2.5; ctx.strokeStyle = '#fff'; ctx.stroke();
+  dot(P.center, 3, '#fff', 2);
+}
+
+// ---------- 实时比例尺（本页的记忆点） ----------
+// 物理长度取整（10/20/50/…μm），屏幕像素长度随缩放变 —— 和论文插图里的标尺一样，
+// 让你一眼看出比例尺对不对，而不是只读一个数。
+const NICE_UM = [10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000];
+// ⚠️ 必须和 app/annotate.py 的 BAR_TARGET_RATIO 一致。不一致的话，
+// 屏幕上显示「2 mm」、导出图里变成「500 μm」，用户会以为导出算错了。
+const BAR_TARGET_RATIO = 0.175;
+
+function scaleBarInfo() {
+  if (!S.umpp) return null;
+  // 目标宽度按「会被导出的那一块」算：框选了就按框，没框就按整张照片。
+  // 不能用画布宽度 —— 画布有留白，照片不一定占满，那样算出来的
+  // 物理长度和导出图挑的不是同一个。
+  const regionPx = EXPORTING ? EXPORT_W
+    : (S.crop ? (S.crop.x1 - S.crop.x0)
+    : S.W);
+  const targetUm = regionPx * BAR_TARGET_RATIO * S.umpp;
+  // 取**最接近**的整数值，而不是下一个更大的 ——
+  // 否则会出现"5 mm 的标尺比 3.4 mm 的孔还长"这种读起来别扭的情况
+  let um = NICE_UM[0], best = Infinity;
+  for (const v of NICE_UM) {
+    const d = Math.abs(Math.log(v / targetUm));
+    if (d < best) { best = d; um = v; }
+  }
+  return { um, px: um / S.umpp * S.view.s };
+}
+
+function fmtBar(um) {
+  if (um >= 1000) {
+    const mm = um / 1000;
+    return (Number.isInteger(mm) ? mm : mm.toFixed(1)) + ' mm';
+  }
+  return um + ' μm';
+}
+
+const BAR_TICK = 7;
+
+// 标尺画在哪 —— 画和"点得到吗"必须用同一套坐标，所以只算一次
+function scaleBarGeom() {
+  const b = scaleBarInfo();
+  if (!b || b.px < 12) return null;
+  const m = uz(26), m2 = uz(32), tk = uz(BAR_TICK);
+  let x2, y;
+  if (S.barXY) {                                    // 用户拖过，就听他的
+    [x2, y] = toS(S.barXY[0], S.barXY[1]);
+    x2 = Math.max(b.px + uz(8), Math.min(CW, x2));
+    y = Math.max(tk + uz(6), Math.min(CH, y));
+  } else {
+    // 贴到照片的某个角（下拉框选的那个）。导出时画布就是框选区域，
+    // 所以这里自然落在导出图的对应角上。
+    const pos = $('exScale').value;
+    const vr = viewRegion();
+    const photoR = Math.min(CW, toS(vr.x1, 0)[0]);
+    const photoB = Math.min(CH, toS(0, vr.y1)[1]);
+    x2 = (pos === 'bl' || pos === 'tl')
+      ? Math.max(0, S.view.tx) + m + b.px : photoR - m;
+    y = (pos === 'tr' || pos === 'tl')
+      ? Math.max(0, S.view.ty) + m2 + tk : photoB - m2;
+    x2 = Math.max(b.px + uz(8), Math.min(CW - m, x2));
+    y = Math.max(tk + uz(6), Math.min(CH - m2, y));
+  }
+  // b.px 里已经乘过 S.view.s 了（导出时它就是倍率），这里不能再乘 UIZ
+  return { x2, y, x1: x2 - b.px, px: b.px, um: b.um };
+}
+
+function hitScaleBar(p) {
+  const g = scaleBarGeom();
+  if (!g) return false;
+  return p[0] >= g.x1 - 8 && p[0] <= g.x2 + 8 && Math.abs(p[1] - g.y) <= 13;
+}
+
+function drawScaleBar() {
+  const g = scaleBarGeom();
+  if (!g) return;
+  const { x1, x2, y } = g;
+  const tick = uz(BAR_TICK);
+
+  const bar = () => {
+    ctx.beginPath();
+    ctx.moveTo(x1, y); ctx.lineTo(x2, y);
+    ctx.moveTo(x1, y - tick); ctx.lineTo(x1, y + tick);
+    ctx.moveTo(x2, y - tick); ctx.lineTo(x2, y + tick);
+  };
+  ctx.lineCap = 'butt';
+  ctx.strokeStyle = INK; ctx.lineWidth = uz(6); bar(); ctx.stroke();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = uz(2.5); bar(); ctx.stroke();
+
+  const t = fmtBar(g.um);
+  ctx.font = labelFont();
+  ctx.textAlign = 'right'; ctx.textBaseline = 'bottom';
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = uz(4); ctx.strokeStyle = INK;
+  ctx.strokeText(t, x2, y - uz(11));
+  ctx.fillStyle = '#fff'; ctx.fillText(t, x2, y - uz(11));
+}
+
+// ---------- 数字格式 ----------
+function fmtLen(um) {
+  if (um == null) return '—';
+  return um < 1000 ? `${um.toFixed(1)} μm` : `${(um / 1000).toFixed(2)} mm`;
+}
+// 长度的唯一算法：像素长 × 当前比例尺。
+// 有透视校正后这里要先经 H 变换再算（届时像素长由后端给）。
+function lineUm(L) {
+  if (!S.umpp) return null;
+  return Math.hypot(L.x2 - L.x1, L.y2 - L.y1) * S.umpp;
+}
+
+// ---------- 侧栏同步 ----------
+function syncPanel() {
+  const c = S.circle, has = !!c;
+  $('inA').disabled = $('inB').disabled = $('inT').disabled = !has;
+  if (has) {
+    if (document.activeElement !== $('inA')) $('inA').value = (c.a * 2).toFixed(1);
+    if (document.activeElement !== $('inB')) $('inB').value = (c.b * 2).toFixed(1);
+    if (document.activeElement !== $('inT')) $('inT').value = (c.th * 180 / Math.PI).toFixed(1);
+  }
+  $('umpp').textContent = S.umpp ? S.umpp.toFixed(3) : '—';
+  // 这一行说的是**这张照片**当时是按多大的孔标定的，不是当前设置。
+  // 用户在测量中途改了孔直径的话，两者会不一样 —— 得让他看得见，
+  // 否则他会以为老照片也自动跟着变了。要用新直径得把圆重新拖一下。
+  $('basis').textContent = has
+    ? `长轴 ${(c.a * 2).toFixed(1)} px`
+      + (S.umpp ? ` = ${((S.umpp * 2 * Math.max(c.a, c.b)) / 1000).toFixed(3)} mm` : '')
+    : '还没有定圆';
+  paintWell();      // 孔直径那几行字（含"这张图还是按老直径算的"提醒）
+
+  const ol = $('lines');
+  ol.innerHTML = '';
+  if (!S.lines.length) {
+    ol.innerHTML = '<p class="none">还没有量过</p>';
+  }
+  for (const L of S.lines) {
+    const li = document.createElement('li');
+
+    const sw = document.createElement('span');
+    sw.className = 'swatch'; sw.style.background = L.color;
+
+    const val = document.createElement('span');
+    val.className = 'val'; val.textContent = fmtLen(lineUm(L));
+
+    const note = document.createElement('input');
+    note.value = L.note || '';
+    note.placeholder = '备注';
+    note.setAttribute('aria-label', `第 ${L.seq} 条的备注`);
+    note.addEventListener('change', () => {
+      const before = L.note || '';
+      if (note.value === before) return;
+      L.note = note.value;
+      const a = actNote(L.id, before, note.value);
+      pushAct(a);
+      a.redo().catch(err => setStatus(err.message, true));   // 立刻存一次
+    });
+
+    const del = document.createElement('button');
+    del.className = 'del'; del.textContent = '✕';
+    del.title = '删掉这一条';
+    del.setAttribute('aria-label', `删掉第 ${L.seq} 条`);
+    del.addEventListener('click', async () => {
+      S.lines = S.lines.filter(x => x.id !== L.id);
+      pushAct(actDelLine(L));
+      await apiDelLine(L.id);
+      render(); syncPanel();
+    });
+
+    li.append(sw, val, note, del);
+    ol.append(li);
+  }
+  $('cnt').textContent = `${S.lines.length} 条`;
+  const next = hist.past[hist.past.length - 1];
+  $('btnUndo').disabled = !next;
+  $('btnUndo').title = next ? `撤销：${next.what}` : '没有可撤销的操作';
+  $('btnClear').disabled = !S.lines.length;
+
+  // 快速裁剪的选项跟着测量记录走。
+  // ⚠️ 这个下拉框**不存任何状态** —— 显示什么完全由 S.crop 推出来，
+  // 所以不会出现"界面说聚焦、实际是手动"那种对不上的状态。
+  const cropSel = $('exCrop');
+  cropSel.innerHTML = '<option value="">不裁剪（整张）</option>';
+  if (S.crop) {
+    const o = document.createElement('option');
+    o.value = 'manual';
+    o.disabled = true;      // 它是当前状态，不是一个动作
+    o.textContent = `手动框选（${Math.round(S.crop.x1 - S.crop.x0)} × `
+                  + `${Math.round(S.crop.y1 - S.crop.y0)} 像素）`;
+    cropSel.append(o);
+  }
+  for (const L of S.lines) {
+    const o = document.createElement('option');
+    o.value = `focus:${L.seq}`;
+    o.textContent = `聚焦 #${L.seq}（${fmtLen(lineUm(L))}）`;
+    cropSel.append(o);
+  }
+  cropSel.value = S.crop ? 'manual' : '';
+
+  $('btnApplyCrop').disabled = !cropMode || !S.crop;
+  $('btnResetCrop').disabled = !S.crop;      // 已经在整张图时是灰的
+  $('cropTip').hidden = !cropMode;
+
+  // 裁剪会把标定圆切到画面外：长度照样算得对（比例尺是按每张图单独存的），
+  // 但那个圆看不见了，也就没法再拖它重新标定 —— 得提醒一句怎么退回去。
+  // ⚠️ 只在**真的**会被切出去时才显示。用 max(a,b) 当圆半径是最保守的判法，
+  // 宁可漏报也不天天喊狼来了。
+  const k = S.crop;      // 复用函数开头的 c = S.circle —— 这里不能再声明一次 c
+  const r = c ? Math.max(c.a, c.b) : 0;
+  $('cropWarn').hidden = !(c && k && (c.cx + r < k.x0 || c.cx - r > k.x1 ||
+                                      c.cy + r < k.y0 || c.cy - r > k.y1));
+
+  const canExport = !!S.imageId && !!S.umpp;
+  $('btnExportPng').disabled = !canExport;
+  $('btnExportCsv').disabled = !canExport || !S.lines.length;
+
+  const hasImg = !!S.imageId;
+  $('btnRename').disabled = !hasImg;
+  $('btnDelete').disabled = !hasImg;
+  for (const id of ['enB', 'enC', 'enS', 'enAuto', 'enReset', 'enHold']) {
+    $(id).disabled = !hasImg;
+  }
+  $('curName').textContent = hasImg ? S.name : '还没打开照片';
+  $('curName').className = hasImg ? '' : 'none';
+}
+
+$('exCrop').addEventListener('change', e => {
+  const v = e.target.value;
+  if (!v) { resetCrop(); return; }                    // 「不裁剪（整张）」= 回到原图
+  const L = S.lines.find(x => x.seq === Number(v.slice(6)));
+  if (!L) return;
+  cropUndo = S.crop ? { ...S.crop } : null;
+  S.crop = focusCropForLine(L);                       // 算出一个框，之后照样能手调
+  cropMode = true;
+  $('exSelect').checked = true;
+  setStatus('框已经套在这条线周围了。拖白点接着调，满意就点「裁好了」');
+  fitView(); render(); syncPanel();
+});
+
+// 这几个勾选框/下拉框直接改画布 —— 勾上就能看见效果，导出跟它一模一样
+for (const id of ['exSeq', 'exNotes', 'exScale']) {
+  $(id).addEventListener('change', () => { render(); syncPanel(); });
+}
+
+$('exSelect').addEventListener('change', e => {
+  cropMode = e.target.checked;
+  cv.style.cursor = 'crosshair';
+  if (cropMode) {
+    cropUndo = S.crop ? { ...S.crop } : null;   // 记一下，退出时还原
+    setStatus('在图上按住左键拖出要保留的范围；拖框上的白点改大小，满意了点「裁好了」');
+  } else {
+    // 没点「裁好了」就退出 = 这次调整不算数（用户要的是"点裁好了才裁"）
+    S.crop = cropUndo;
+    cropUndo = null;
+    setStatus('已退出裁剪，刚才的调整没保存');
+  }
+  fitView(); render(); syncPanel();
+});
+
+// 把框夹回照片里。
+// ⚠️ 用户**能**把框拖到照片外面（放大之后画布上大部分都不是照片，指针落在留白里
+// 就给出一堆负数坐标）。不夹的话：源矩形整个落在图外 → 画布**一片空白**，
+// 而且那个坏框还会被 PUT 进库、**刷新也回不来** —— 非技术用户会读成"照片没了/工具坏了"。
+// 规格 §1.4 说的"越界在渲染时钳制"就是这里：服务端那一刻没载图，钳不了。
+function clampToPhoto(c) {
+  return {
+    x0: Math.max(0, Math.min(S.W, c.x0)), y0: Math.max(0, Math.min(S.H, c.y0)),
+    x1: Math.max(0, Math.min(S.W, c.x1)), y1: Math.max(0, Math.min(S.H, c.y1)),
+  };
+}
+
+// 「裁好了」：把框记进库，画面切成裁完的那块
+$('btnApplyCrop').addEventListener('click', async () => {
+  if (!S.crop || !S.imageId) return;
+  const box = clampToPhoto(S.crop);
+  // 整个框都在照片外面 → 夹完什么都不剩。**别存、也别切画面**，让用户重框一个。
+  if (box.x1 - box.x0 < 8 || box.y1 - box.y0 < 8) {
+    setStatus('框拖到照片外面去了，在照片上重新框一个', true);
+    return;
+  }
+  S.crop = box;                     // 夹过之后才存，库里永远是图内的框
+  const r = await fetch(`/api/image/${S.imageId}/crop`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(box),
+  });
+  if (!r.ok) { setStatus(await errText(r, '裁剪没存上'), true); return; }
+  cropMode = false;
+  cropUndo = null;
+  $('exSelect').checked = false;
+  setStatus('裁剪已生效');
+  fitView(); render(); syncPanel();
+});
+
+// 「回到原图」：取消裁剪。已经在整张图时按钮是灰的。
+async function resetCrop() {
+  if (S.imageId && S.crop) {
+    const r = await fetch(`/api/image/${S.imageId}/crop`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),            // 四个数都不给 = 取消裁剪
+    });
+    if (!r.ok) { setStatus(await errText(r, '没取成，再试一次'), true); return; }
+  }
+  S.crop = null;
+  cropUndo = null;
+  cropMode = false;
+  $('exSelect').checked = false;
+  setStatus('已回到原图');
+  fitView(); render(); syncPanel();
+}
+$('btnResetCrop').addEventListener('click', resetCrop);
+
+// ---------- 画质调整 ----------
+// 对比度/饱和度用浏览器自带的 canvas 滤镜做，不引第三方库：零依赖、跟手实时，
+// 而且导出走的是同一段 render()，天生所见即所得。
+// ⚠️ 它只决定"画出来长什么样" —— 原图一个字节都不动，坐标也不受影响，
+// 所以调它**不需要重算任何测量值**，反过来也一样。
+const ENH_IDS = { b: 'enB', c: 'enC', s: 'enS' };
+let enhTimer = null;
+
+// ★ 「亮度」不能用 CSS 的 brightness()。
+// brightness 是**乘以一个倍数**，越亮的地方涨得越多：30→45、128→192，
+// 220 直接顶到 255 糊成一片死白。照片本来就偏暗时，一拖先是亮的地方烂掉，
+// 暗的地方还是看不清 —— 正好跟"想看清楚"相反。
+// 改成伽马曲线：越暗的地方涨得越多，而且 0 还是 0、255 还是 255，
+// 两头都不会撞到墙，所以怎么拖都不会糊。b=1 原样，b>1 提亮，b<1 压暗。
+function toneLut(b) {
+  const L = new Uint8ClampedArray(256);
+  const inv = 1 / b;
+  for (let i = 0; i < 256; i++) L[i] = 255 * Math.pow(i / 255, inv);
+  return L;
+}
+
+// 曲线是**逐像素**的，CSS 滤镜做不到（它只有乘和加，画不出曲线），所以烘一次：
+// 把调好色的照片放进一张离屏画布，之后缩放、平移、框选、导出全都直接贴这张，
+// 不再逐像素算第二遍。
+const PROXY_SIDE = 1600;   // 拖滑块时先烘这么大，跟手；松手再烘全分辨率
+const FULL_SIDE = Infinity;
+let photoCv = null;        // 烘好的照片；null = 没烘，直接画原图
+let bakedKey = '';         // photoCv 是哪张图 + 哪组曲线 + 烘了多大
+
+function bakeTone(maxSide) {
+  const W = img.naturalWidth, H = img.naturalHeight;
+  if (!W || !H) return;
+  const k = Math.min(1, maxSide / Math.max(W, H));
+  const w = Math.max(1, Math.round(W * k));
+  const h = Math.max(1, Math.round(H * k));
+  const key = `${S.imageId}|${S.enh.b}|${w}`;
+  if (bakedKey === key) return;         // 没变就不重烘（缩放/平移根本不走这里）
+
+  if (S.enh.b === 1) {                  // 亮度是原样 → 不用烘，省掉一整趟像素
+    photoCv = null; bakedKey = key;
+    return;
+  }
+
+  const cc = document.createElement('canvas');
+  cc.width = w; cc.height = h;
+  const cx = cc.getContext('2d', { willReadFrequently: true });
+  cx.drawImage(img, 0, 0, w, h);
+  const idata = cx.getImageData(0, 0, w, h);
+  const p = idata.data;
+  const L = toneLut(S.enh.b);
+  for (let i = 0; i < p.length; i += 4) {
+    p[i] = L[p[i]]; p[i + 1] = L[p[i + 1]]; p[i + 2] = L[p[i + 2]];
+  }
+  cx.putImageData(idata, 0, 0);
+  photoCv = cc;
+  bakedKey = key;
+}
+
+// 这一笔该拿哪张图来画：按住看原图 / 亮度没调过 → 原图，否则 → 烘好的那张
+function photoSrc() {
+  if (S.enhHold || S.enh.b === 1 || !photoCv) return img;
+  return photoCv;
+}
+
+function enhFilter() {
+  if (S.enhHold) return 'none';
+  const v = S.enh;
+  if (v.c === 1 && v.s === 1) return 'none';
+  return `contrast(${v.c}) saturate(${v.s})`;
+}
+
+function setEnhInputs() {
+  for (const [k, id] of Object.entries(ENH_IDS)) {
+    $(id).value = String(S.enh[k]);
+    $(id + 'v').textContent = S.enh[k].toFixed(2);
+  }
+}
+
+async function saveEnhance() {
+  if (!S.imageId) return;
+  try {
+    await fetch(`/api/image/${S.imageId}/enhance`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(S.enh),
+    });
+  } catch { /* 存不下也不该打断正在调画质这件事 */ }
+}
+
+function onEnhInput() {
+  for (const [k, id] of Object.entries(ENH_IDS)) {
+    S.enh[k] = +$(id).value;
+    $(id + 'v').textContent = S.enh[k].toFixed(2);
+  }
+  bakeTone(PROXY_SIDE);          // 拖的时候先烘小图，跟手；松手再补全分辨率
+  render();
+  clearTimeout(enhTimer);
+  enhTimer = setTimeout(saveEnhance, 400);   // 拖滑块一秒能发几十个事件，别一个个往回传
+}
+
+for (const id of Object.values(ENH_IDS)) {
+  $(id).addEventListener('input', onEnhInput);
+  // 松手（change 只在松开时来一次）补一张全分辨率的：拖的时候烘的那张是缩小版，
+  // 放大细看或者导出会糊
+  $(id).addEventListener('change', () => { bakeTone(FULL_SIDE); render(); });
+}
+
+$('enReset').addEventListener('click', () => {
+  S.enh = { b: 1, c: 1, s: 1 };
+  setEnhInputs(); bakeTone(FULL_SIDE); render(); saveEnhance();
+  setStatus('画质调整已还原成原样');
+});
+
+// 「自动调」在人这边量，不走后端：调的是"显示成什么样"，就该照显示的画面来定。
+// 把照片缩到很小取一次像素，算平均亮度和明暗差，再看离目标有多远。
+$('enAuto').addEventListener('click', () => {
+  const N = 160;
+  const k = Math.min(1, N / Math.max(S.W, S.H, 1));
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(S.W * k));
+  c.height = Math.max(1, Math.round(S.H * k));
+  const cc = c.getContext('2d');
+  cc.drawImage(img, 0, 0, c.width, c.height);
+  const d = cc.getImageData(0, 0, c.width, c.height).data;
+
+  let sum = 0, sum2 = 0, n = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    const y = 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];   // 人眼亮度权重
+    sum += y; sum2 += y * y; n++;
+  }
+  n = Math.max(n, 1);
+  const mean = sum / n;
+  const sd = Math.sqrt(Math.max(0, sum2 / n - mean * mean));
+
+  // 往"中等亮度 + 明暗分明"上靠：目镜拍的照片常见的是整体偏暗、灰蒙蒙一片。
+  // 亮度现在是伽马，反推方式跟"乘一个倍数"不一样 —— 要让平均亮度 mean 走到 120，
+  // 就是解 255·(mean/255)^(1/b) = 120，两边取对数直接得 b。
+  const lim = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+  S.enh = {
+    b: +lim(Math.log(Math.max(mean, 1) / 255) / Math.log(120 / 255), 0.7, 2).toFixed(2),
+    c: +lim(58 / Math.max(sd, 1), 0.8, 2.2).toFixed(2),
+    s: 1,
+  };
+  setEnhInputs(); bakeTone(FULL_SIDE); render(); saveEnhance();
+  setStatus(`已自动调到：原图平均亮度 ${mean.toFixed(0)}，明暗差 ${sd.toFixed(0)}`);
+});
+
+// 按住看原图。松手可能在按钮外面，所以监听挂在 window 上。
+$('enHold').addEventListener('pointerdown', () => { S.enhHold = true; render(); });
+window.addEventListener('pointerup', () => {
+  if (S.enhHold) { S.enhHold = false; render(); }
+});
+$('enHold').addEventListener('contextmenu', e => e.preventDefault());
+
+function setStatus(msg, isErr) {
+  $('status').textContent = msg;
+  $('status').className = isErr ? 'err' : '';
+}
+
+// 后端自己写的提示都是中文。FastAPI 默认的 404 文案是英文的 "Not Found" ——
+// 把它原样显示给用户等于没说，而且它几乎总是同一个原因：**旧版本的服务还在跑**。
+// 用完就抛，所以调用方必须先判 !r.ok 再读 body（这个函数会吃掉响应体）。
+async function errText(r, fallback) {
+  let detail = '';
+  try { detail = (await r.json()).detail; } catch { /* 不是 JSON 就算了 */ }
+  if (typeof detail === 'string' && /[一-龥]/.test(detail)) return detail;
+  if (r.status === 404) {
+    return '这个功能在当前运行的版本里没有 —— 多半是旧版本还在跑。'
+         + '请关掉那个黑窗口，重新双击「启动.bat」。';
+  }
+  return fallback;
+}
+
+// ---------- 后端接口 ----------
+async function apiAddLine(L) {
+  const r = await fetch(`/api/image/${S.imageId}/lines`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ x1: L.x1, y1: L.y1, x2: L.x2, y2: L.y2, note: L.note || '' }),
+  });
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.detail || '记不下来');
+  return d;
+}
+
+function apiDelLine(id) {
+  return fetch(`/api/lines/${id}`, { method: 'DELETE' }).catch(() => {});
+}
+
+async function apiLabel(id, o) {
+  const r = await fetch(`/api/lines/${id}/label`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dx: o.dx, dy: o.dy }),
+  });
+  if (!r.ok) throw new Error('标签位置没存下来');
+}
+
+const findLine = id => S.lines.find(L => L.id === id);
+
+// ---------- 撤销 / 重做 ----------
+// 记「动作」而不是「整页快照」：每个动作自带 undo / redo 两个函数，
+// 各自去调对应的接口。删掉的线能撤销回来，拖过的圆能撤销回去，
+// 不用整体重放，也不会因为中间插了别的操作而错位。
+const hist = { past: [], future: [] };
+
+function pushAct(a) {
+  hist.past.push(a);
+  hist.future.length = 0;     // 新动作一出现，原来那条重做链就作废了
+  syncPanel();
+}
+
+async function step(from, to, key, done) {
+  const a = from.pop();
+  if (!a) return;
+  try {
+    await a[key]();
+    to.push(a);
+    setStatus(done + (a.what ? '：' + a.what : ''));
+  } catch (err) {
+    setStatus(err.message, true);
+  }
+  render(); syncPanel();
+}
+
+const doUndo = () => step(hist.past, hist.future, 'undo', '撤销了');
+const doRedo = () => step(hist.future, hist.past, 'redo', '重做了');
+
+const sameCircle = (a, b) =>
+  a.cx === b.cx && a.cy === b.cy && a.a === b.a && a.b === b.b && a.th === b.th;
+
+// 圆变了就存一次历史。拖动和侧栏输入框都走这里。
+async function commitCircle(before) {
+  await saveCircle();
+  const after = { ...S.circle };
+  if (!sameCircle(before, after)) pushAct(actCircle(before, after));
+}
+
+function actCircle(before, after) {
+  const put = async c => { S.circle = { ...c }; await saveCircle(); };
+  return { what: '改定圆', undo: () => put(before), redo: () => put(after) };
+}
+
+function actAddLine(rec) {
+  const h = { rec };      // 撤销后再重做，后端会给一个新 id，所以得能换
+  return {
+    what: '画线',
+    undo: async () => {
+      await apiDelLine(h.rec.id);
+      S.lines = S.lines.filter(L => L.id !== h.rec.id);
+    },
+    redo: async () => { h.rec = await apiAddLine(h.rec); S.lines.push(h.rec); },
+  };
+}
+
+function actDelLine(rec) {
+  const h = { rec };
+  return {
+    what: `删掉第 ${rec.seq} 条`,
+    undo: async () => { h.rec = await apiAddLine(h.rec); S.lines.push(h.rec); },
+    redo: async () => {
+      await apiDelLine(h.rec.id);
+      S.lines = S.lines.filter(L => L.id !== h.rec.id);
+    },
+  };
+}
+
+function actNote(id, before, after) {
+  const put = async s => {
+    const L = findLine(id);
+    if (!L) return;
+    L.note = s;
+    const r = await fetch(`/api/lines/${id}/note`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note: s }),
+    });
+    if (!r.ok) throw new Error('备注没存下来');
+  };
+  return { what: '改备注', undo: () => put(before), redo: () => put(after) };
+}
+
+function actLabel(id, before, after) {
+  const put = async o => {
+    const L = findLine(id);
+    if (!L) return;
+    L.label_dx = o.dx; L.label_dy = o.dy;
+    await apiLabel(id, o);
+  };
+  return { what: '挪标签', undo: () => put(before), redo: () => put(after) };
+}
+
+function actClear(recs) {
+  const h = { recs: recs.map(r => ({ ...r })) };
+  return {
+    what: `清空 ${h.recs.length} 条`,
+    undo: async () => { for (const r of h.recs) S.lines.push(await apiAddLine(r)); },
+    redo: async () => {
+      await fetch(`/api/image/${S.imageId}/clear-lines`, { method: 'POST' });
+      S.lines = [];
+    },
+  };
+}
+
+// ---------- 拖动 ----------
+let drag = null;
+let ctrlDown = false;      // 按住 Ctrl = 进入"挑标签"模式
+let hoverLabel = null;     // 鼠标下那个标签，用来高亮
+
+cv.addEventListener('pointerdown', e => {
+  if (!S.imageId) return;
+
+  // 中键 / 右键 = 挪照片
+  if (e.button === 1 || e.button === 2) {
+    drag = { kind: 'pan', sx: e.clientX, sy: e.clientY, tx: S.view.tx, ty: S.view.ty };
+    cv.setPointerCapture(e.pointerId);
+    e.preventDefault();
+    return;
+  }
+  if (e.button !== 0) return;
+
+  const p = localPos(e);
+  cv.setPointerCapture(e.pointerId);
+
+  // Ctrl + 左键 = 抓"可以挪的标注元素"（长度标签、标尺）。
+  // 放在最前面：按了 Ctrl 就是明说要抓它们，不要画线也不要拖框
+  if (ctrlDown) {
+    const L = hitLabel(p);
+    if (L) {
+      drag = { kind: 'label', line: L, start: p,
+               l0: { dx: L.label_dx || 0, dy: L.label_dy || 0 } };
+      cv.style.cursor = 'grabbing';
+      render();
+      return;
+    }
+    if (hitScaleBar(p)) {
+      const g = scaleBarGeom();
+      drag = { kind: 'bar', start: p, b0: S.barXY, fallback: [g.x2, g.y] };
+      cv.style.cursor = 'grabbing';
+      render();
+      return;
+    }
+  }
+
+  // 框选模式：左键全交给裁剪框
+  if (cropMode) {
+    const h = hitCropHandle(p);
+    if (h) {
+      drag = { kind: 'crop', mode: 'resize', handle: h, c0: { ...S.crop } };
+    } else if (inCrop(p)) {
+      drag = { kind: 'crop', mode: 'move', start: p, c0: { ...S.crop } };
+    } else {
+      const [ix, iy] = toI(p[0], p[1]);
+      S.crop = normCrop([ix, iy], [ix, iy]);
+      drag = { kind: 'crop', mode: 'new', anchor: [ix, iy] };
+    }
+    render();
+    return;
+  }
+
+  const k = hitTest(p);
+  if (k && S.circle) {
+    drag = { kind: k, start: p, c0: { ...S.circle } };
+  } else {                                    // 空白处 = 画测量线
+    const [ix, iy] = toI(p[0], p[1]);
+    drag = { kind: 'line', x1: ix, y1: iy, x2: ix, y2: iy };
+  }
+  render();
+});
+
+// 中键在浏览器里默认是"自动滚动"，会在画布上留个圈圈图标，得拦掉
+cv.addEventListener('mousedown', e => { if (e.button === 1) e.preventDefault(); });
+
+cv.addEventListener('pointermove', e => {
+  const p = localPos(e);
+
+  if (!drag) {          // 没在拖：按住 Ctrl 时把鼠标下的标签框亮起来
+    if (ctrlDown && S.imageId) {
+      const L = hitLabel(p);
+      if (L !== hoverLabel) { hoverLabel = L; render(); }
+      cv.style.cursor = (L || hitScaleBar(p)) ? 'grab' : 'crosshair';
+    }
+    return;
+  }
+
+  if (drag.kind === 'pan') {
+    S.view.tx = drag.tx + (e.clientX - drag.sx);
+    S.view.ty = drag.ty + (e.clientY - drag.sy);
+    render();
+    return;
+  }
+  if (drag.kind === 'line') {
+    [drag.x2, drag.y2] = toI(p[0], p[1]);
+  } else if (drag.kind === 'label') {
+    const i0 = toI(...drag.start), i1 = toI(p[0], p[1]);
+    drag.line.label_dx = drag.l0.dx + (i1[0] - i0[0]);
+    drag.line.label_dy = drag.l0.dy + (i1[1] - i0[1]);
+  } else if (drag.kind === 'bar') {
+    // 标尺存的是右端点位置；第一次拖时它还没有坐标，先从当前画的位置接管
+    const b0 = drag.b0
+      ? toS(drag.b0[0], drag.b0[1])
+      : drag.fallback;
+    const [ix, iy] = toI(p[0] - drag.start[0] + b0[0],
+                         p[1] - drag.start[1] + b0[1]);
+    S.barXY = [ix, iy];
+  } else if (drag.kind === 'crop') {
+    const [ix, iy] = toI(p[0], p[1]);
+    const c0 = drag.c0;
+    if (drag.mode === 'new') {
+      S.crop = normCrop(drag.anchor, [ix, iy]);
+    } else if (drag.mode === 'move') {
+      const i0 = toI(...drag.start);
+      const dx = ix - i0[0], dy = iy - i0[1];
+      S.crop = { x0: c0.x0 + dx, y0: c0.y0 + dy, x1: c0.x1 + dx, y1: c0.y1 + dy };
+    } else {
+      S.crop = resizeCrop(c0, drag.handle, ix, iy);
+    }
+  } else {
+    applyCircleDrag(p);
+  }
+  render();
+});
+
+async function endDrag() {
+  if (!drag) return;
+  const d = drag; drag = null;
+  cv.style.cursor = 'crosshair';
+
+  if (d.kind === 'pan') { render(); return; }
+
+  if (d.kind === 'bar') {
+    render(); syncPanel();
+    try {
+      await fetch(`/api/image/${S.imageId}/scale-bar`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(S.barXY ? { x: S.barXY[0], y: S.barXY[1] } : { x: null, y: null }),
+      });
+      setStatus('标尺位置记下了');
+    } catch { setStatus('标尺位置没存下来', true); }
+    return;
+  }
+
+  if (d.kind === 'crop') {
+    // 太小的一次拖动当成误触，别留下一个点
+    const c = S.crop;
+    if (c && (c.x1 - c.x0) * S.view.s < MIN_CROP_PX
+          && (c.y1 - c.y0) * S.view.s < MIN_CROP_PX) {
+      S.crop = d.c0 || null;
+    } else if (c) {
+      setStatus(`框了 ${Math.round(c.x1 - c.x0)} × ${Math.round(c.y1 - c.y0)} 像素，`
+              + '满意就点「裁好了」');
+    }
+    render(); syncPanel();
+    return;
+  }
+
+  if (d.kind === 'label') {
+    const before = d.l0;
+    const after = { dx: d.line.label_dx, dy: d.line.label_dy };
+    render();
+    if (before.dx !== after.dx || before.dy !== after.dy) {
+      pushAct(actLabel(d.line.id, before, after));
+      try { await apiLabel(d.line.id, after); }
+      catch (err) { setStatus(err.message, true); }
+    }
+    return;
+  }
+
+  if (d.kind === 'line') {
+    if (Math.hypot(d.x2 - d.x1, d.y2 - d.y1) < 3) { render(); return; }   // 太短，算误触
+    try {
+      const rec = await apiAddLine(d);
+      S.lines.push(rec);
+      pushAct(actAddLine(rec));
+      setStatus(`第 ${rec.seq} 条：${fmtLen(lineUm(rec))}`);
+    } catch (err) {
+      setStatus(err.message, true);
+    }
+  } else {
+    await commitCircle(d.c0);
+  }
+  render(); syncPanel();
+}
+cv.addEventListener('pointerup', endDrag);
+cv.addEventListener('pointercancel', () => {
+  drag = null; cv.style.cursor = 'crosshair'; render();
+});
+cv.addEventListener('contextmenu', e => e.preventDefault());
+
+function applyCircleDrag(p) {
+  const c0 = drag.c0, k = drag.kind, c = { ...S.circle };
+
+  if (k === 'center') {
+    const i0 = toI(...drag.start), i1 = toI(p[0], p[1]);
+    c.cx = c0.cx + (i1[0] - i0[0]);
+    c.cy = c0.cy + (i1[1] - i0[1]);
+  } else if (k === 'rot') {
+    const [ox, oy] = toS(c0.cx, c0.cy);
+    c.th = Math.atan2(p[1] - oy, p[0] - ox) - Math.PI / 2;
+  } else {
+    const [ox, oy] = toS(c0.cx, c0.cy);
+    const dx = p[0] - ox, dy = p[1] - oy;
+    const ct = Math.cos(c0.th), st = Math.sin(c0.th);
+    if (k === 'aP' || k === 'aM') {
+      c.a = Math.max(MIN_SEMI, Math.abs(dx * ct + dy * st) / S.view.s);
+    } else {
+      c.b = Math.max(MIN_SEMI, Math.abs(-dx * st + dy * ct) / S.view.s);
+    }
+  }
+  S.circle = c;
+  S.umpp = WELL_DIAMETER_UM / (2 * Math.max(c.a, c.b));   // 短轴不参与换算
+  syncPanel();
+}
+
+async function saveCircle() {
+  const c = S.circle;
+  try {
+    const r = await fetch(`/api/image/${S.imageId}/circle`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(c),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || '存不下');
+    S.umpp = d.um_per_px;
+    S.lines = d.lines;      // 后端按新比例尺重算过的值
+    setStatus(`比例尺 ${S.umpp.toFixed(3)} μm/像素，${S.lines.length} 条记录已重算`);
+  } catch (err) {
+    setStatus(err.message, true);
+  }
+  syncPanel();
+}
+
+// ---------- 缩放 ----------
+// 缩放量**和滚动量成正比**，不是"每来一个事件就固定缩 15%"。
+// 触控板双指滑动一秒能发几十个事件，按事件固定步长会瞬间放大到失控；
+// 按滚动量算，滑得轻就缩得少，滑得重才缩得多。
+//
+// 但两种设备的"一个 delta"不是一回事：鼠标滚轮一格是**一个大 delta 一次到齐**
+// （Windows 上通常正好 100），触控板是**很多个小 delta 连续来**（一次几个）。
+// 用同一个系数的话，滚轮手感正好，触控板滑一整下几乎看不出变化。
+// 所以按单次 delta 的大小分两档，触控板那档给 3 倍。
+const WHEEL_K = 0.0015;   // 鼠标滚轮
+const PAD_K = 0.0045;     // 触控板（= 滚轮的 3 倍，一次双指滑动约等于半格滚轮）
+const NOTCH = 40;         // 单次 delta 超过这个数，就当成滚轮的一格
+
+cv.addEventListener('wheel', e => {
+  if (!S.imageId) return;
+  e.preventDefault();
+  const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 100 : 1;   // 行 / 页换回像素
+  const dy = Math.max(-120, Math.min(120, e.deltaY * unit));           // 单次封顶，防甩飞
+  const p = localPos(e);
+  const [ix, iy] = toI(p[0], p[1]);
+  const s = S.view.s * Math.exp(-dy * (Math.abs(dy) >= NOTCH ? WHEEL_K : PAD_K));
+  // 缩放范围以"整张适应屏幕"为基准，别把人甩到找不到照片的地方
+  S.view.s = S.fit
+    ? Math.max(S.fit / 8, Math.min(S.fit * 24, s))
+    : s;
+  S.view.tx = p[0] - ix * S.view.s;
+  S.view.ty = p[1] - iy * S.view.s;
+  render();
+}, { passive: false });
+
+cv.addEventListener('dblclick', () => { fitView(); render(); });
+
+// ---------- 键盘 ----------
+function isTyping() {
+  const a = document.activeElement;
+  return !!a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.isContentEditable);
+}
+
+window.addEventListener('keydown', e => {
+  if (e.key === 'Control' && !ctrlDown) {
+    ctrlDown = true;
+    if (S.imageId && !isTyping()) render();     // 把标签框出来，提示"现在能抓了"
+  }
+  // 在备注框里打字时，Ctrl+Z 归浏览器管（撤销刚打的字），不抢
+  if (!(e.ctrlKey || e.metaKey) || isTyping()) return;
+  if (e.key.toLowerCase() !== 'z') return;
+  e.preventDefault();
+  if (e.shiftKey) doRedo(); else doUndo();
+});
+
+function leaveCtrlMode() {
+  if (!ctrlDown) return;
+  ctrlDown = false;
+  hoverLabel = null;
+  if (S.imageId) { cv.style.cursor = 'crosshair'; render(); }
+}
+
+window.addEventListener('keyup', e => { if (e.key === 'Control') leaveCtrlMode(); });
+// 按着 Ctrl 切到别的窗口，松手时 keyup 就收不到了 —— 失去焦点时自己收回来
+window.addEventListener('blur', leaveCtrlMode);
+
+// ---------- 侧栏输入（键盘精确调圆的路径） ----------
+function bindNum(id, apply) {
+  $(id).addEventListener('change', async () => {
+    const v = parseFloat($(id).value);
+    if (!isFinite(v) || !S.circle) return;
+    const before = { ...S.circle };
+    apply(v);
+    S.umpp = WELL_DIAMETER_UM / (2 * Math.max(S.circle.a, S.circle.b));
+    render();
+    await commitCircle(before);
+  });
+}
+bindNum('inA', v => { S.circle.a = Math.max(MIN_SEMI, v / 2); });
+bindNum('inB', v => { S.circle.b = Math.max(MIN_SEMI, v / 2); });
+bindNum('inT', v => { S.circle.th = v * Math.PI / 180; });
+
+// ---------- 点样孔直径 ----------
+// 用户手上那块板的孔径，别人可能是 2.5mm、1.9mm。改动存到后端
+// （data/settings.json，见 app/settings.py），**只影响以后新定圆的照片**。
+//
+// ⚠️ 真正说了算的是后端：存圆的时候后端按它自己的设置算 um_per_px 再回传
+// （commitCircle 里那句 S.umpp = d.um_per_px）。这里的值只负责"拖动时屏幕上
+// 的数字实时跟着动"。两处不一致的话，就是拖的时候显示一个数、松手跳成另一个数。
+//
+// 出厂默认由后端一起给（/api/settings 的 factory_um），这里不写第二份 3400 ——
+// 写两份必然分叉。
+let WELL_FACTORY_UM = WELL_DIAMETER_UM;
+
+// 3.4 而不是 3.400：用户填多少就显示多少，别自作主张补零。
+function mmText(um) { return String(+(um / 1000).toFixed(3)); }
+
+function paintWell() {
+  for (const el of document.querySelectorAll('.wellMm')) {
+    el.textContent = mmText(WELL_DIAMETER_UM);
+  }
+  if (document.activeElement !== $('inWell')) {
+    $('inWell').value = mmText(WELL_DIAMETER_UM);
+  }
+  $('wellReset').textContent = `恢复默认（${mmText(WELL_FACTORY_UM)} mm）`;
+
+  // 已经打开的照片还按老直径算着 —— 必须说出来。否则用户改完直径，
+  // 看见画布上的长度没变，会以为改动没生效（其实是生效了，只是不回头改老照片）。
+  const usedUm = (S.umpp && S.circle)
+    ? S.umpp * 2 * Math.max(S.circle.a, S.circle.b) : null;
+  $('wellHint').textContent =
+    (usedUm !== null && Math.abs(usedUm - WELL_DIAMETER_UM) > 0.5)
+      ? `注意：现在打开的这张照片还是按 ${mmText(usedUm)} mm 算的。`
+        + '要让它也用上新直径，把这张图的圆重新拖一下（测量记录会自动重算）。'
+      : '';
+}
+
+async function loadWellDiameter() {
+  try {
+    const r = await fetch('/api/settings');
+    if (r.ok) {
+      const d = await r.json();
+      WELL_DIAMETER_UM = d.well_diameter_um;
+      WELL_FACTORY_UM = d.factory_um;
+    }
+  } catch { /* 读不出来就用出厂默认 —— 一个设置读不出来不该让整个页面没法测 */ }
+  paintWell();
+}
+
+async function putWellDiameter(um) {
+  const r = await fetch('/api/settings', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ well_diameter_um: um }),
+  });
+  if (!r.ok) throw new Error(await errText(r, '这个数存不下来。'));
+  const d = await r.json();
+  WELL_DIAMETER_UM = d.well_diameter_um;
+  paintWell();
+}
+
+$('inWell').addEventListener('change', async () => {
+  const mm = parseFloat($('inWell').value);
+  if (!isFinite(mm)) { paintWell(); return; }   // 清空了或填了非数字，退回真值
+  try {
+    await putWellDiameter(mm * 1000);
+    setStatus(`孔直径设成 ${mmText(WELL_DIAMETER_UM)} mm。以后新定圆的照片都按它算。`);
+  } catch (err) {
+    setStatus(err.message, true);
+    // 没存进去就把输入框掰回真值 —— 按回车触发时焦点还在框里，
+    // 上面那句 paintWell 会被 activeElement 那道判断挡住，留在框里的是个假数。
+    $('inWell').value = mmText(WELL_DIAMETER_UM);
+  }
+});
+
+$('wellReset').addEventListener('click', async () => {
+  try {
+    await putWellDiameter(WELL_FACTORY_UM);
+    setStatus(`孔直径改回默认的 ${mmText(WELL_FACTORY_UM)} mm。`);
+  } catch (err) { setStatus(err.message, true); }
+});
+
+// ---------- 导出 ----------
+// 走 fetch 拿 blob 再触发下载，而不是直接把浏览器导航到接口地址：
+// 那样一旦失败（没标定、图太大），用户只会看到一个下载下来的错误页，
+// 页面上什么提示都没有。
+function filenameFromDisposition(cd) {
+  const m = /filename\*=utf-8''([^;]+)/i.exec(cd || '');
+  return m ? decodeURIComponent(m[1]) : '';
+}
+
+// 聚焦某条测量线时套的框。算法和原来 Python 那版一致（线段外扩 35%）。
+function focusCropForLine(L) {
+  const w = Math.abs(L.x2 - L.x1), h = Math.abs(L.y2 - L.y1);
+  const span = Math.max(w, h, 1);
+  const half = span / 2 + Math.max(span * 0.35, span * 0.5);
+  const cx = (L.x1 + L.x2) / 2, cy = (L.y1 + L.y2) / 2;
+  return {
+    x0: Math.max(0, cx - half), y0: Math.max(0, cy - half),
+    x1: Math.min(S.W, cx + half), y1: Math.min(S.H, cy + half),
+  };
+}
+
+// 这次导出到底导哪一块（原图坐标）。裁剪是"这张图的事实"，所以只有一种来源。
+function exportRegion() {
+  return S.crop || { x0: 0, y0: 0, x1: S.W, y1: S.H };
+}
+
+const MAX_EXPORT_PIXELS = 40_000_000;    // 再大浏览器画布就吃不消了
+
+// ★ 导出 = 把框选那块按同一套画法重画一遍。
+// 不另写渲染，就不会出现"导出和页面对不上"。
+function renderExport(region, sup) {
+  const w = Math.max(1, Math.round((region.x1 - region.x0) * sup));
+  const h = Math.max(1, Math.round((region.y1 - region.y0) * sup));
+  const off = document.createElement('canvas');
+  off.width = w; off.height = h;
+
+  const keep = { ctx, CW, CH, dpr, s: S.view.s, tx: S.view.tx, ty: S.view.ty,
+                 uiz: UIZ, exporting: EXPORTING, ew: EXPORT_W };
+  try {
+    ctx = off.getContext('2d');
+    CW = w; CH = h;
+    dpr = 1;                       // 离屏画布已经是目标像素，不用再乘设备像素比
+    EXPORTING = true;
+    EXPORT_W = region.x1 - region.x0;
+    // 屏幕上 1px → 导出图里 sup / 当前缩放 个像素
+    UIZ = sup / keep.s;
+    S.view.s = sup;                // 原图坐标 → 离屏像素
+    S.view.tx = -region.x0 * sup;
+    S.view.ty = -region.y0 * sup;
+    render();
+  } finally {
+    ctx = keep.ctx; CW = keep.CW; CH = keep.CH; dpr = keep.dpr;
+    UIZ = keep.uiz; EXPORTING = keep.exporting; EXPORT_W = keep.ew;
+    S.view.s = keep.s; S.view.tx = keep.tx; S.view.ty = keep.ty;
+    render();                      // 把屏幕上的画面恢复原样
+  }
+  return off;
+}
+
+function downloadBlob(blob, name) {
+  const href = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = href; a.download = name;
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(href), 10000);
+}
+
+// 导出图片：整张图就是画布放大版，所以只在浏览器里做，不经过后端
+async function exportPng() {
+  if (!S.imageId) return;
+  const btn = $('btnExportPng');
+  const sup = Number($('exSuper').value);
+  const region = exportRegion();
+  const px = (region.x1 - region.x0) * sup * (region.y1 - region.y0) * sup;
+  if (px > MAX_EXPORT_PIXELS) {
+    setStatus(`导出的图太大（${Math.round(px / 1e6)} 百万像素）。`
+              + '请降低倍率，或先用框选裁小一点。', true);
+    return;
+  }
+
+  btn.disabled = true;
+  setStatus('正在生成，稍等一下…');
+  try {
+    bakeTone(FULL_SIDE);       // 刚才拖滑块烘的是缩小版，导出前补一张全分辨率的
+    const canvas = renderExport(region, sup);
+    const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
+    if (!blob) throw new Error('浏览器没能生成图片，可能是图太大了');
+    downloadBlob(blob, `${S.name}_标注.png`);
+    setStatus(`导出好了：${canvas.width} × ${canvas.height} 像素`);
+  } catch (err) {
+    setStatus(err.message, true);
+  } finally {
+    syncPanel();
+  }
+}
+
+// 导出表格：这个是数据，还是走后端（带 BOM，Excel 打开不乱码）
+async function exportCsv() {
+  if (!S.imageId) return;
+  $('btnExportCsv').disabled = true;
+  setStatus('正在生成表格…');
+  try {
+    const r = await fetch(`/api/image/${S.imageId}/export.csv`);
+    if (!r.ok) {
+      let msg = '导出失败';
+      try { msg = (await r.json()).detail || msg; } catch { /* 不是 JSON */ }
+      throw new Error(msg);
+    }
+    downloadBlob(await r.blob(),
+                 filenameFromDisposition(r.headers.get('content-disposition'))
+                 || `${S.name}_测量记录.csv`);
+    setStatus('表格导出好了');
+  } catch (err) {
+    setStatus(err.message, true);
+  } finally {
+    syncPanel();
+  }
+}
+
+$('btnExportPng').addEventListener('click', exportPng);
+$('btnExportCsv').addEventListener('click', exportCsv);
+
+$('btnUndo').addEventListener('click', doUndo);
+
+$('btnClear').addEventListener('click', async () => {
+  if (!confirm('清空这张图的全部测量记录？\n（按 Ctrl+Z 可以撤销回来）')) return;
+  const gone = S.lines.slice();
+  S.lines = [];
+  pushAct(actClear(gone));
+  await fetch(`/api/image/${S.imageId}/clear-lines`, { method: 'POST' });
+  render(); syncPanel();
+  setStatus(`已清空 ${gone.length} 条记录`);
+});
+
+// ---------- 范围（下拉框只列哪个文件夹里的照片） ----------
+// 范围**只活在地址栏里**，不进 localStorage：地址栏本来就会被 rewrite，
+// 刷新天然带得住；多存一份就多一个会不一致的地方。
+
+let FOLDER_NAMES = {};        // { "3": "实验A" }
+
+async function loadFolderNames() {
+  try {
+    const d = await (await fetch('/api/folders')).json();
+    FOLDER_NAMES = Object.fromEntries(d.items.map(f => [String(f.id), f.name]));
+  } catch { /* 拿不到名字就退回显示「文件夹 3」—— 不该因此打不开照片 */ }
+}
+
+function scopeName() {
+  if (S.scope === '0') return '未分类';
+  return FOLDER_NAMES[S.scope] || '这个文件夹';
+}
+
+function writeScopeUrl() {
+  const parts = [];
+  if (S.imageId !== null) parts.push(`id=${S.imageId}`);
+  if (S.scope !== '') parts.push(`folder=${S.scope}`);
+  // 两个都没有就只留路径 —— 点「看全部」那一下 imageId 还是 null，
+  // 写出去的话地址栏里会留一个 `?id=null`，刷新/转发出去都是一句错话。
+  history.replaceState(null, '', parts.length ? `?${parts.join('&')}` : location.pathname);
+}
+
+function paintScope(n) {
+  $('scope').hidden = S.scope === '';    // 范围是「全部」时整句不显示，省得每次都说废话
+  if (S.scope === '') return;
+  $('scopeText').textContent = `当前范围：${scopeName()}（${n} 张）`;
+}
+
+$('scopeAll').addEventListener('click', async () => {
+  S.scope = '';                          // 单向放宽，没有反向收窄的入口 —— 收窄回图库点
+  writeScopeUrl();
+  await loadPhotos(S.imageId);
+  setStatus('已切回全部照片');
+});
+
+// ---------- 照片列表 ----------
+async function loadPhotos(selectId) {
+  try {
+    const u = new URLSearchParams({ limit: '1000' });
+    if (S.scope !== '') u.set('folder', S.scope);
+    const d = await (await fetch('/api/images?' + u.toString())).json();
+    const sel = $('picker');
+    sel.innerHTML = '';
+    if (!d.items.length) {
+      sel.innerHTML = '<option value="">还没有照片 —— 去图库导入</option>';
+      paintScope(0);
+      return;
+    }
+    for (const it of d.items) {
+      const o = document.createElement('option');
+      o.value = String(it.id);
+      o.textContent = it.line_count ? `${it.name}（已量 ${it.line_count} 条）` : it.name;
+      sel.append(o);
+    }
+    // 上限 1000。超了就明说还有多少张没列出来 —— 静默截断会让用户
+    // 以为照片不见了（原来就是这个问题：默认 200，第 201 张起无声消失）
+    if (d.total > d.items.length) {
+      const o = document.createElement('option');
+      o.disabled = true;
+      o.textContent = `—— 还有 ${d.total - d.items.length} 张没列出来，去图库挑 ——`;
+      sel.append(o);
+    }
+    if (selectId != null) sel.value = String(selectId);
+    paintScope(d.total);
+  } catch {
+    setStatus('读不到照片列表', true);
+  }
+}
+
+// ---------- 刷新回到原样 ----------
+// 用户把刷新当"卡住了的恢复手段"，所以刷新绝不能让他丢工作：
+// 回到同一张照片、同样的缩放和位置、同一块框选区域。
+
+function saveSession() {
+  if (!S.imageId) return;
+  try {
+    localStorage.setItem(SESSION_KEY, JSON.stringify({
+      imageId: S.imageId, view: S.view, cropMode,
+      ex: {
+        seq: $('exSeq').checked, notes: $('exNotes').checked,
+        scale: $('exScale').value, supersample: $('exSuper').value,
+      },
+    }));
+  } catch { /* 存不下就算了，不该因此让页面出问题 */ }
+}
+
+function scheduleSave() {
+  if (EXPORTING || !S.imageId) return;   // 导出时 S.view 是临时的，别记错
+  clearTimeout(sessionTimer);
+  sessionTimer = setTimeout(saveSession, 500);
+}
+
+function readSession() {
+  try {
+    const s = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');
+    return s && s.imageId ? s : null;
+  } catch { return null; }
+}
+
+function clearSession() {
+  try { localStorage.removeItem(SESSION_KEY); } catch {}
+}
+
+for (const id of ['exCrop', 'exSuper']) $(id).addEventListener('change', scheduleSave);
+
+// ---------- 打开照片 ----------
+// restore 有值 = 这是刷新后的恢复，要连缩放/框选/面板一起还原。
+async function openPhoto(id, restore) {
+  if (!id) return;
+  $('btnOpen').disabled = true;
+  setStatus('正在打开并自动找孔…（几秒钟）');
+  try {
+    const r = await fetch('/api/open', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image_id: id }),
+    });
+    if (!r.ok) throw new Error(await errText(r, '打不开这张照片'));
+    const d = await r.json();
+
+    S.imageId = d.image_id;
+    S.name = d.name;                 // 导出文件名要用
+    S.W = d.width; S.H = d.height;
+    S.circle = d.circle;
+    S.umpp = d.um_per_px;
+    S.lines = d.lines;
+    S.barXY = d.scale_bar ? [d.scale_bar.x, d.scale_bar.y] : null;
+    S.enh = d.enhance || { b: 1, c: 1, s: 1 };   // 画质调整是每张照片自己的
+    S.enhHold = false;
+    setEnhInputs();
+    // 换了照片，撤销栈就作废了 —— 留着会把动作施加到新的照片上
+    hist.past.length = 0;
+    hist.future.length = 0;
+
+    // 裁剪是**库里的事实**（服务器上存着），所以刷不刷新都从服务端拿，
+    // 不再走 localStorage —— 老 localStorage 里残留的 crop 字段直接忽略。
+    S.crop = d.crop || null;
+    cropUndo = null;
+
+    if (restore) {
+      cropMode = !!restore.cropMode;
+      // 刷新前就在调框的话，把当前这个框当成"进模式前的样子" ——
+      // 不然刷新后一取消勾选，本地 S.crop 就被清成 null（服务端那份还在，
+      // 再刷新又回来了，用户会以为工具在抽风）。
+      if (cropMode) cropUndo = S.crop ? { ...S.crop } : null;
+      const ex = restore.ex || {};
+      $('exSeq').checked = !!ex.seq;
+      $('exNotes').checked = !!ex.notes;
+      if (ex.scale) $('exScale').value = ex.scale;
+      if (ex.supersample) $('exSuper').value = ex.supersample;
+    } else {
+      cropMode = false;              // 换了照片，别把上一张的调框状态带过来
+    }
+    $('exSelect').checked = cropMode;
+
+    await new Promise((res, rej) => {
+      img.onload = res; img.onerror = () => rej(new Error('照片加载失败'));
+      img.src = `/api/image/${S.imageId}/file?t=${Date.now()}`;
+    });
+
+    // 缩放/平移的恢复必须等图片加载完 —— fitView() 得先知道图片多大
+    const v = restore && restore.view;
+    if (v && v.s > 0) S.view = { s: v.s, tx: v.tx, ty: v.ty };
+    else fitView();
+
+    bakeTone(FULL_SIDE);         // 这张照片自己存的画质调整，照它烘一遍
+    $('empty').hidden = true;
+    $('picker').value = String(S.imageId);
+    if ($('picker').value !== String(S.imageId)) {
+      // 这张不在当前范围的下拉框里（比如刷新恢复回来的是别的文件夹的照片）。
+      // 不处理的话下标会落在**另一张**照片上，和画布对不上 —— 放宽成「全部」，
+      // 这时候它一定在里面，再选一次。
+      S.scope = '';
+      await loadPhotos(S.imageId);
+    }
+    render(); syncPanel();
+    setStatus(restore ? '已回到刷新前那张照片' : '起点圆是自动猜的，请自己拖准');
+    saveSession();
+    // 地址栏跟着当前这张走。**必须带上 folder** —— 不带的话刷新一次范围就没了，
+    // 违反「刷新保持现状」。
+    writeScopeUrl();
+  } catch (err) {
+    setStatus(err.message, true);
+    if (restore) clearSession();     // 那张照片没了，别下次还拿它来恢复
+    history.replaceState(null, '', location.pathname);   // 地址栏里那张也没了，别拖着
+  } finally {
+    $('btnOpen').disabled = false;
+  }
+}
+
+$('btnOpen').addEventListener('click', () => openPhoto(+$('picker').value));
+$('btnGallery').addEventListener('click', () => { location.href = '/gallery'; });
+
+// ---------- 导入 ----------
+async function uploadFiles(files) {
+  const list = [...(files || [])];
+  if (!list.length) return;
+
+  const fd = new FormData();
+  for (const f of list) fd.append('files', f, f.name);
+
+  setStatus(`正在导入 ${list.length} 张…`);
+  try {
+    const r = await fetch('/api/images/upload', { method: 'POST', body: fd });
+    if (!r.ok) throw new Error(await errText(r, '导入失败'));
+    const d = await r.json();
+
+    // 一次拖进来多张 → 这些照片先进「待确认导入列表」，不是马上要量。
+    // 跳走不会丢工作：这个页面刷新后会自动恢复照片/缩放/框选/导出设置。
+    if (d.staged && d.staged.length) {
+      location.href = '/gallery?pending=1';
+      return;
+    }
+
+    // 只在什么都没打开时才自动打开 —— 否则会把用户正在量的那张挤掉，撤销链也没了
+    const first = d.ok[0];
+    const openNew = !S.imageId && !!first;
+    if (openNew) {
+      // 新导入的照片一定在「未分类」。不切回「全部」的话，下拉框里没有它，
+      // $('picker').value 会被静默忽略，显示成一张**别的**照片（见设计 §1.5）
+      S.scope = '';
+      writeScopeUrl();
+    }
+    await loadPhotos(openNew ? first.id : S.imageId);
+    if (openNew) await openPhoto(first.id);
+
+    if (d.failed.length) {
+      // 需求：失败的文件要能看见文件名和原因。状态栏一行放不下，
+      // 摘要在这，鼠标停上去看完整清单。
+      $('status').title = d.failed.map(f => `${f.name}：${f.reason}`).join('\n');
+      setStatus(`导入 ${d.ok.length} 张，${d.failed.length} 张没成功（鼠标停在这行看原因）`, true);
+    } else if (d.ok.length) {
+      $('status').title = '';
+      setStatus(openNew ? `已导入：${first.name}（在「未分类」里，去图库可以改）`
+                        : `导入 ${d.ok.length} 张，从上面的下拉框里选`);
+    }
+  } catch (err) {
+    setStatus(err.message, true);
+  }
+}
+
+// ---------- 拖拽 / 粘贴 ----------
+// ⚠️ 必须挂在 document 上。只挂画布的话，拖偏一点松手，浏览器会**直接导航到那个文件**，
+// 当前的缩放、框选、撤销栈全丢。
+let dragDepth = 0;
+document.addEventListener('dragenter', e => {
+  if (!e.dataTransfer || ![...e.dataTransfer.types].includes('Files')) return;
+  e.preventDefault();
+  dragDepth++;
+  document.body.classList.add('dragging');
+});
+document.addEventListener('dragover', e => e.preventDefault());
+document.addEventListener('dragleave', () => {
+  if (--dragDepth <= 0) { dragDepth = 0; document.body.classList.remove('dragging'); }
+});
+document.addEventListener('drop', async e => {
+  e.preventDefault();
+  dragDepth = 0;
+  document.body.classList.remove('dragging');
+  const files = [...((e.dataTransfer && e.dataTransfer.files) || [])];
+  if (files.length) await uploadFiles(files);
+});
+
+window.addEventListener('paste', async e => {
+  if (isTyping()) return;            // 在备注框里粘贴时别抢
+  const files = [...((e.clipboardData && e.clipboardData.items) || [])]
+    .filter(i => i.kind === 'file' && i.type.startsWith('image/'))
+    .map(i => i.getAsFile()).filter(Boolean);
+  if (!files.length) return;         // 不是图片就交给浏览器自己处理
+  e.preventDefault();
+  await uploadFiles(files);
+});
+
+// ---------- 改名 / 删除 ----------
+$('btnRename').addEventListener('click', async () => {
+  if (!S.imageId) return;
+  const name = prompt('给这张照片起个名字：', S.name);
+  if (name === null || !name.trim() || name.trim() === S.name) return;
+  try {
+    const r = await fetch(`/api/images/${S.imageId}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name.trim() }),
+    });
+    if (!r.ok) throw new Error(await errText(r, '改不了名字'));
+    const d = await r.json();
+    S.name = d.name;
+    await loadPhotos(S.imageId);
+    syncPanel();
+    setStatus(`改好了：${d.name}`);
+  } catch (err) {
+    setStatus(err.message, true);
+  }
+});
+
+$('btnDelete').addEventListener('click', async () => {
+  if (!S.imageId) return;
+  if (!confirm(`确定删掉「${S.name}」吗？\n\n`
+             + '· 这张图上画的测量记录会一起删掉，撤不回来\n'
+             + '· 照片文件不会真的抹掉，会挪到 data\\trash\\ 里')) return;
+  try {
+    const r = await fetch(`/api/images/${S.imageId}`, { method: 'DELETE' });
+    if (!r.ok) throw new Error(await errText(r, '删不掉'));
+    await r.json();
+
+    S.imageId = null; S.name = ''; S.W = 0; S.H = 0;
+    S.circle = null; S.umpp = null; S.lines = []; S.crop = null; S.barXY = null;
+    cropUndo = null; cropMode = false;
+    $('exSelect').checked = false;
+    hist.past.length = 0; hist.future.length = 0;
+    clearSession();
+    $('empty').hidden = false;
+    await loadPhotos();
+    render(); syncPanel();
+    setStatus('已删除');
+  } catch (err) {
+    setStatus(err.message, true);
+  }
+});
+
+// ---------- 启动 ----------
+resize();
+(async () => {
+  // 范围必须在 loadPhotos 之前读出来 —— 它决定下拉框列哪一批
+  const u = new URLSearchParams(location.search);
+  const f = u.get('folder');
+  S.scope = f ? f : '';                  // 没有这个参数、或者空值 = 全部
+
+  // 孔直径要**先读** —— 它决定页面上那几个 "孔径 X mm" 显示什么，
+  // 也决定用户接着拖圆时那串实时数字按多大的孔算。
+  await loadWellDiameter();
+  await loadFolderNames();
+  await loadPhotos();
+  // 从图库点进来的会带 ?id=N。它优先，但**只有确实换了照片**才丢掉缩放/框选 ——
+  // 同一张的话，那些正是刷新要恢复的东西。
+  const want = Number(u.get('id')) || null;
+  const s = readSession();
+  if (want && (!s || s.imageId !== want)) await openPhoto(want);
+  else if (s) await openPhoto(s.imageId, s);   // 回到刷新前那张 —— 他要的是"刷新不丢工作"
+})();
+</script>
+</body>
+</html>

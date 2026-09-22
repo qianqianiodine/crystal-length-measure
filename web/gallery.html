@@ -1,0 +1,2164 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>图库 · 晶体长度测量</title>
+<style>
+:root {
+  --ink:    #17150f;   /* 和测量页同一套色，两个页面来回走不该有割裂感 */
+  --panel:  #1f1c16;
+  --raise:  #2a261d;
+  --rule:   #37322a;
+  --text:   #ede8de;
+  --mute:   #9a9284;
+  --faint:  #8a8276;
+  --ref:    #e0a63c;
+  --warn:   #d2604a;   /* 只在「这个动作会删东西」时出现 */
+  --ui:   "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+  --num:  Consolas, "Cascadia Mono", ui-monospace, monospace;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  font: 13px/1.6 var(--ui);
+  background: var(--ink); color: var(--text);
+  display: flex; flex-direction: column; overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- 顶栏 ---------- */
+header {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 10px;
+  padding: 0 16px; height: 46px;
+  background: var(--panel); border-bottom: 1px solid var(--rule);
+}
+.brand { font-weight: 600; letter-spacing: .01em; white-space: nowrap; }
+.brand span { color: var(--faint); font-weight: 400; margin-left: 8px; }
+
+input[type=search], select {
+  font: 13px var(--ui); color: var(--text); background: var(--raise);
+  border: 1px solid var(--rule); border-radius: 3px;
+  padding: 5px 8px;
+}
+input[type=search] { width: 220px; }
+input[type=search]::placeholder { color: var(--faint); }
+input:hover, select:hover { border-color: #4a4438; }
+input:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible {
+  outline: 2px solid var(--ref); outline-offset: 1px; border-color: var(--ref);
+}
+
+#count { margin-left: auto; color: var(--mute); font-size: 12.5px; white-space: nowrap; }
+
+/* 回测量页。放在最后、做成次要按钮 —— 它只是退路，用户多半是点格子进测量页的 */
+a.back {
+  color: var(--mute); text-decoration: none; white-space: nowrap;
+  border: 1px solid var(--rule); border-radius: 3px;
+  padding: 5px 12px; background: var(--raise);
+}
+a.back:hover { background: #34301f; border-color: #4a4438; color: var(--text); }
+
+header button {
+  font: 13px var(--ui); color: var(--text); background: var(--raise);
+  border: 1px solid var(--rule); border-radius: 3px;
+  padding: 5px 12px; cursor: pointer; white-space: nowrap;
+}
+header button:hover:not(:disabled) { background: #34301f; border-color: #4a4438; }
+header button:disabled { opacity: .38; cursor: default; }
+
+/* ---------- 左边那棵文件夹树 ---------- */
+#work { flex: 1 1 auto; display: flex; min-height: 0; }   /* min-height:0 是让子元素能真滚动 */
+
+aside#tree {
+  flex: 0 0 216px; display: flex; flex-direction: column; min-height: 0;
+  background: var(--panel); border-right: 1px solid var(--rule);
+}
+#treeList { flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; padding: 8px 0; }
+
+.tnode {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  font: 13px var(--ui); color: var(--text); text-align: left;
+  background: none; border: 0; border-left: 2px solid transparent;
+  padding: 5px 10px 5px 12px; cursor: pointer;
+}
+.tnode:hover { background: var(--raise); }
+.tnode[aria-current="true"] { background: var(--raise); border-left-color: var(--ref); }
+.tnode .tname { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.tnode .tcount { flex: 0 0 auto; font-family: var(--num); font-size: 11.5px; color: var(--faint); }
+.tnode.special .tname { color: var(--mute); }
+.tnode.special[aria-current="true"] .tname { color: var(--text); }
+.treeSep { height: 1px; background: var(--rule); margin: 7px 12px; }
+.treeErr { margin: 10px 14px; font-size: 12px; line-height: 1.6; color: var(--faint); }
+
+#treeOps { flex: 0 0 auto; border-top: 1px solid var(--rule); padding: 9px 10px 10px; }
+#treeHint { margin: 0 0 8px; font-size: 11.5px; line-height: 1.55; color: var(--faint); }
+.ops { display: flex; gap: 4px; }
+.ops button {
+  flex: 1 1 0; min-width: 0; font: 12px var(--ui); color: var(--text); background: var(--raise);
+  border: 1px solid var(--rule); border-radius: 3px; padding: 4px 0; cursor: pointer;
+}
+.ops button:hover:not(:disabled) { background: #34301f; border-color: #4a4438; }
+.ops button:disabled { opacity: .34; cursor: default; }
+.ops button.del:hover:not(:disabled) { border-color: var(--warn); color: var(--warn); }
+
+/* ---------- 格子墙 ---------- */
+main {
+  flex: 1 1 auto; min-width: 0; overflow-y: auto; overscroll-behavior: contain;
+  padding: 18px 20px 24px;
+}
+
+#grid {
+  display: grid; gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(186px, 1fr));
+}
+
+.card {
+  display: flex; flex-direction: column;
+  background: var(--panel); border: 1px solid var(--rule); border-radius: 3px;
+  overflow: hidden;
+}
+.card .open { display: flex; flex-direction: column; flex: 1 1 auto; text-decoration: none; color: inherit; }
+.card .shot {
+  aspect-ratio: 4 / 3; background: var(--raise);
+  display: flex; align-items: center; justify-content: center;
+}
+/* contain 而不是 cover：缩略图是拿来认照片的，裁掉一半就没法认了 */
+.card img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.card .shot.bad::after { content: '图坏了'; color: var(--faint); font-size: 12px; }
+.card .shot.bad img { display: none; }
+
+.card .body { padding: 9px 11px 11px; border-top: 1px solid var(--rule); }
+.card .name {
+  margin: 0; font-size: 13px; line-height: 1.5;
+  /* 名字可能很长，最多两行，多的省略 —— 不能让它把卡片撑成不同高度 */
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; word-break: break-all;
+}
+.card .meta {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+  margin: 5px 0 0; font-family: var(--num); font-size: 11.5px; color: var(--faint);
+}
+.card .meta .done { color: var(--mute); }
+
+/* 「这张图归档在哪」——既是信息也是按钮：点开就能改 */
+.card .file {
+  display: block; width: 100%; text-align: left; cursor: pointer;
+  font: 12px var(--ui); color: var(--faint); background: none;
+  border: 0; border-top: 1px solid var(--rule);
+  padding: 7px 11px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.card .file:hover { color: var(--ref); background: #24211a; }
+
+/* 标签对话框：一行一张图 + 三个下拉。每一行都要有缩略图 ——
+   用户说了「我不一定是按照顺序拍的」，没有缩略图就是闭着眼睛填。
+
+   ⚠️ 这一行的宽度要用弹窗内宽（430 - 2×18 = 394px）反着算：
+   缩略图 48 + 名字 ≤150 + 三个下拉各 ~48 + 五个 gap 各 6 = ~360px，留了余量。
+   改这里的任何一个数之前先加一遍，超了弹窗就横着滚。 */
+.tagList { max-height: 46vh; overflow-y: auto; }
+.tagRow { display: flex; align-items: center; gap: 6px; padding: 5px 2px; }
+.tagRow + .tagRow { border-top: 1px solid #2a2822; }
+.tagThumb { width: 48px; height: 36px; object-fit: cover; border-radius: 3px;
+            background: #1a1916; flex: 0 0 auto; }
+/* ⚠️ 别写成 flex: 1 1 auto —— 那样名字会吃掉整行剩下的空间，把三个下拉顶到
+   最右边，看着像三样互不相干的东西。封顶 150px，多出来的空位留在行尾
+   （flex 默认就是 flex-start，不用再补 spacer）。 */
+.tagName { flex: 0 1 auto; max-width: 150px; min-width: 0; font-size: 12px;
+           color: var(--text); overflow: hidden; text-overflow: ellipsis;
+           white-space: nowrap; }
+/* ⚠️ 选择器必须带 `#dlgBody`（id）—— 上面那条 `#dlgBody select { width: 100% }`
+   权重是 101，只写 `.tagRow select` 是 11，**id 赢**，`width: auto` 会被吃掉，
+   三个下拉照样各占满整行、弹窗横着滚。（踩过：第一版就是这么白改的。）
+   `flex: 0 0 auto` + 封顶 64px，剩下的宽度全给名字；名字自己能缩，所以怎么都不会溢出。 */
+#dlgBody .tagRow select {
+  flex: 0 0 auto; width: auto; max-width: 64px;
+  padding: 5px 3px; font-size: 12.5px;
+}
+/* 两行填了同一个孔位 —— 这张图是哪份样品就说不清了 */
+.tagRow.dup { background: #3a2119; outline: 1px solid var(--warn); }
+
+@media (prefers-reduced-motion: no-preference) {
+  .card { transition: border-color .12s ease; }
+  .card:hover { border-color: var(--ref); }
+}
+
+/* ---------- 多选模式 ---------- */
+/* 勾选角标：不在选择模式时它虽然被画出来，但是看不见 */
+.card .tick { display: none; }
+
+/* 操作栏 #selBar 的样式照 #pBar 写（同色、同内边距、同高度） */
+#selBar { flex: 0 0 auto; display: flex; align-items: center; gap: 10px;
+          padding: 0 16px; height: 42px;
+          background: var(--raise); border-bottom: 1px solid var(--rule); }
+#selBar[hidden] { display: none; }
+#selBar .txt { font-size: 13px; color: var(--text); }
+#selBar .grow { flex: 1 1 auto; }
+#selBar button {
+  font: 13px var(--ui); color: var(--text); background: var(--panel);
+  border: 1px solid var(--rule); border-radius: 3px; padding: 5px 14px; cursor: pointer;
+}
+#selBar button:hover:not(:disabled) { background: #34301f; border-color: #4a4438; }
+#selBar button:disabled { opacity: .38; cursor: default; }
+#selBar button#selDelete:not(:disabled) { color: var(--warn); border-color: #5a3428; }
+#selBar button#selDelete:not(:disabled):hover { background: #3a2119; border-color: var(--warn); }
+
+/* 选择模式下整张卡片都是勾选开关 —— 卡上那个「归档…」小按钮必须藏掉，
+   否则它看着能点、其实整张卡片都在响应勾选，会误触 */
+body.selmode .card .file { display: none; }
+body.selmode .card { cursor: pointer; }
+body.selmode .card .shot { position: relative; }
+body.selmode .card .tick {
+  display: block; position: absolute; top: 7px; left: 7px;
+  width: 20px; height: 20px; border-radius: 50%; text-align: center;
+  line-height: 18px; font-size: 13px; color: transparent;
+  background: rgba(23, 21, 15, .72); border: 1.5px solid #6f6a5c;
+}
+body.selmode .card.on { border-color: var(--ref); }
+body.selmode .card.on .tick { background: var(--ref); border-color: var(--ref); color: #241c08; }
+p.warn { color: var(--warn); font-size: 13px; line-height: 1.7; margin: 0; }
+
+/* ---------- 弹窗（新建/改名/移动/复制/删除/归档都用它） ---------- */
+#overlay {
+  position: fixed; inset: 0; z-index: 20; padding: 20px;
+  background: rgba(10, 9, 6, .62);
+  display: flex; align-items: center; justify-content: center;
+}
+#overlay[hidden] { display: none; }
+
+#dlg {
+  width: min(430px, 100%); max-height: 84vh; display: flex; flex-direction: column;
+  background: var(--panel); border: 1px solid var(--rule); border-radius: 4px;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, .55);
+}
+#dlg h2 { margin: 0; padding: 14px 18px 0; font-size: 14.5px; font-weight: 600; }
+#dlgHint { margin: 7px 18px 0; font-size: 12.5px; line-height: 1.65; color: var(--mute); }
+#dlgHint[hidden] { display: none; }
+#dlgBody { flex: 1 1 auto; overflow-y: auto; padding: 14px 18px 4px; }
+#dlgBtns { flex: 0 0 auto; display: flex; justify-content: flex-end; gap: 8px; padding: 12px 18px 14px; }
+#dlgBtns button {
+  font: 13px var(--ui); color: var(--text); background: var(--raise);
+  border: 1px solid var(--rule); border-radius: 3px; padding: 6px 16px; cursor: pointer;
+}
+#dlgBtns button:hover { background: #34301f; border-color: #4a4438; }
+#dlgBtns button.danger { color: var(--warn); border-color: #5a3428; }
+#dlgBtns button.danger:hover { background: #3a2119; border-color: var(--warn); }
+
+#dlgBody input[type=text], #dlgBody select {
+  width: 100%; font: 13px var(--ui); color: var(--text); background: var(--raise);
+  border: 1px solid var(--rule); border-radius: 3px; padding: 7px 9px;
+}
+
+.pick { display: flex; flex-direction: column; gap: 1px; }
+.pickRow {
+  display: flex; align-items: flex-start; gap: 9px;
+  padding: 7px 8px; border-radius: 3px; cursor: pointer; font-size: 13px;
+}
+.pickRow:hover { background: var(--raise); }
+.pickRow input { flex: 0 0 auto; margin: 2px 0 0; accent-color: var(--ref); }
+.pickRow .lab { flex: 1 1 auto; min-width: 0; }
+.pickRow em { display: block; font-style: normal; font-size: 11.5px; color: var(--faint); margin-top: 2px; }
+.pickNone { margin: 2px 0; font-size: 13px; line-height: 1.75; color: var(--mute); }
+
+/* 拖拽时铺满整页的提示 —— 拖到哪儿都算数 */
+#drop { position: fixed; inset: 0; z-index: 50; display: none;
+        align-items: center; justify-content: center; text-align: center;
+        background: rgba(23, 21, 15, .86); border: 3px dashed var(--ref);
+        pointer-events: none; }
+body.dragging #drop { display: flex; }
+#drop h2 { color: var(--ref); font-size: 20px; margin: 0 0 6px; }
+#drop p { color: var(--mute); font-size: 13.5px; margin: 0; }
+
+/* 手机传图弹窗 */
+.qrbox { text-align: center; }
+.qrbox img { width: 180px; height: 180px; background: #fff; border-radius: 3px;
+             padding: 6px; margin-top: 4px; }
+.qrbox .qraddr { font: 12.5px var(--num); color: var(--mute);
+                 word-break: break-all; margin: 9px 0 0; }
+.qrbox .qrhint { color: var(--ref); font-size: 12.5px; margin: 6px 0 0; }
+.qrbox .qrpick { color: var(--mute); font-size: 12.5px; margin: 10px 0 4px; }
+.qrbox select { margin-top: 9px; }   /* 换网卡的下拉框，跟上面那行地址分开 */
+
+/* ---------- 一句话提示 ---------- */
+#toast {
+  position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 30;
+  max-width: min(560px, calc(100% - 40px));
+  background: var(--raise); color: var(--text);
+  border: 1px solid var(--rule); border-left: 3px solid var(--ref); border-radius: 3px;
+  padding: 9px 16px; font-size: 13px; line-height: 1.6;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .5);
+}
+#toast[hidden] { display: none; }
+
+/* ---------- 空态 / 翻页 ---------- */
+#empty {
+  max-width: 46ch; margin: 12vh auto 0; text-align: center;
+  color: var(--faint); line-height: 1.9;
+}
+#empty[hidden] { display: none; }
+#empty h2 { font-size: 16px; font-weight: 600; color: var(--mute); margin: 0 0 8px; }
+#empty button {
+  font: 13px var(--ui); color: var(--text); background: var(--raise);
+  border: 1px solid var(--rule); border-radius: 3px; padding: 5px 12px;
+  cursor: pointer; margin-top: 12px;
+}
+#empty button:hover { background: #34301f; border-color: #4a4438; }
+
+/* ---------- 待确认导入（需求 §3.1.3） ---------- */
+/* [hidden] 必须显式写：下面这些用了 display:flex，会盖掉 hidden 的 display:none。
+   #empty 已经踩过一次这个坑了（第 208 行）。 */
+#pending[hidden], #pBar[hidden] { display: none; }
+
+/* 展开时把格子墙让出来。用 CSS 藏、不重建 DOM —— 收起之后要原样回来。 */
+body.pending-open #grid,
+body.pending-open #empty,
+body.pending-open #pager { display: none; }
+
+#pBar {
+  display: flex; align-items: center; gap: 12px;
+  background: var(--panel); border: 1px solid var(--ref); border-radius: 3px;
+  padding: 9px 13px; margin-bottom: 16px;
+}
+#pBar .txt { flex: 1 1 auto; min-width: 0; color: var(--mute); }
+#pBar .txt b { color: var(--ref); font-weight: 600; }
+
+#pending { display: flex; flex-direction: column; gap: 14px; }
+#pHead {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding-bottom: 12px; border-bottom: 1px solid var(--rule);
+}
+#pHead h2 { margin: 0; font-size: 15px; font-weight: 600; }
+#pHead .sz { color: var(--faint); font-family: var(--num); font-size: 12px; }
+#pHead .grow { flex: 1 1 auto; }
+#pHead label { display: flex; align-items: center; gap: 7px; color: var(--mute); font-size: 12.5px; }
+#pHead input#pPrefix {
+  font: 12.5px var(--ui); color: var(--text); background: var(--ink);
+  border: 1px solid var(--rule); border-radius: 3px; padding: 5px 8px; width: 128px;
+}
+#pHead input#pPrefix:focus { outline: none; border-color: var(--ref); }
+#pHead button, #pFoot button, .prow .wbtns button {
+  font: 12.5px var(--ui); color: var(--text); background: var(--raise);
+  border: 1px solid var(--rule); border-radius: 3px; padding: 5px 11px; cursor: pointer;
+}
+#pHead button:hover, #pFoot button:hover, .prow .wbtns button:hover { background: #34301f; }
+
+#pRows { display: flex; flex-direction: column; gap: 8px; }
+.prow {
+  display: flex; gap: 12px; align-items: flex-start;
+  background: var(--panel); border: 1px solid var(--rule); border-radius: 3px;
+  padding: 10px 12px;
+}
+.prow.bad { border-color: #5a3630; }
+.prow.ow  { border-color: var(--warn); }
+.prow .shot {
+  flex: 0 0 76px; width: 76px; height: 57px; background: var(--raise);
+  border-radius: 2px; display: flex; align-items: center; justify-content: center;
+}
+.prow .shot img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.prow .shot.none::after { content: '—'; color: var(--faint); }
+.prow .info { flex: 1 1 auto; min-width: 0; }
+.prow .orig {
+  color: var(--faint); font: 11.5px var(--num);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.prow .line { display: flex; align-items: center; margin-top: 5px; }
+/* 前缀是一截灰色的独立元素，不落进输入框 —— 清掉前缀时每一行自动退回自己的名字 */
+.prow .pfx {
+  background: var(--raise); color: var(--mute); border: 1px solid var(--rule);
+  border-right: 0; border-radius: 3px 0 0 3px; padding: 6px 7px;
+  font: 12.5px var(--ui); white-space: nowrap;
+}
+.prow .pfx:empty { display: none; }
+.prow input.pname {
+  flex: 1 1 auto; min-width: 0; font: 13px var(--ui); color: var(--text);
+  background: var(--ink); border: 1px solid var(--rule); border-radius: 0 3px 3px 0;
+  padding: 6px 8px;
+}
+.prow .pfx:empty + input.pname { border-radius: 3px; }
+.prow input.pname:focus { outline: none; border-color: var(--ref); }
+.prow .rm {
+  flex: 0 0 auto; margin-left: 7px; background: none; border: 0; cursor: pointer;
+  color: var(--faint); font-size: 15px; padding: 3px 6px;
+}
+.prow .rm:hover { color: var(--warn); }
+.prow .why { margin: 7px 0 0; font-size: 12.5px; color: #e8746a; }
+.warnbox[hidden] { display: none; }
+.warnbox p { margin: 7px 0 0; font-size: 12.5px; color: var(--ref); }
+.warnbox.ow p { color: var(--warn); }
+.prow .wbtns { display: flex; gap: 7px; margin-top: 6px; flex-wrap: wrap; }
+.prow .wbtns button.danger { border-color: var(--warn); color: var(--warn); }
+
+#pFoot { display: flex; gap: 10px; align-items: center; padding-top: 2px; }
+#pFoot .grow { flex: 1 1 auto; }
+#pFoot #pConfirm {
+  background: var(--ref); color: #241c08; font-weight: 600;
+  border-color: var(--ref); padding: 8px 20px;
+}
+#pFoot #pCancel { padding: 8px 16px; }
+
+footer {
+  flex: 0 0 auto; display: flex; align-items: center; justify-content: center; gap: 14px;
+  padding: 10px 16px; background: var(--panel); border-top: 1px solid var(--rule);
+}
+footer[hidden] { display: none; }
+footer button {
+  font: 13px var(--ui); color: var(--text); background: var(--raise);
+  border: 1px solid var(--rule); border-radius: 3px; padding: 4px 12px; cursor: pointer;
+}
+footer button:hover:not(:disabled) { background: #34301f; border-color: #4a4438; }
+footer button:disabled { opacity: .38; cursor: default; }
+footer .pos { font: 12.5px var(--num); color: var(--mute); }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="brand">图库<span>点一张进去量</span></span>
+  <input id="q" type="search" placeholder="搜名字…" aria-label="按名字搜索" autocomplete="off">
+  <select id="order" aria-label="排序方式">
+    <option value="time_desc">导入时间 · 新→旧</option>
+    <option value="time_asc">导入时间 · 旧→新</option>
+    <option value="name_asc">名字 · A→Z</option>
+    <option value="name_desc">名字 · Z→A</option>
+  </select>
+  <select id="status" aria-label="按测量状态筛选">
+    <option value="all">全部</option>
+    <option value="measured">已测量</option>
+    <option value="unmeasured">未测量</option>
+  </select>
+  <span id="count"></span>
+  <button id="gImport" type="button"
+          title="也可以把照片直接拖到这个页面上，或按 Ctrl+V 粘贴">导入照片</button>
+  <button id="gMobile" type="button">手机传图</button>
+  <button id="gSelect" type="button">选择</button>
+  <input type="file" id="filePick" accept="image/*" multiple hidden>
+  <a class="back" href="/">回到测量页</a>
+</header>
+
+<div id="selBar" hidden>
+  <span class="txt" id="selCount">已选 0 张</span>
+  <button id="selPage" type="button">全选本页</button>
+  <button id="selAll" type="button" hidden>选中全部 0 张</button>
+  <span class="grow"></span>
+  <button id="selTag" type="button" disabled>打标签</button>
+  <button id="selExport" type="button" disabled>导出图片</button>
+  <button id="selArchive" type="button" disabled>归档…</button>
+  <button id="selDelete" type="button" disabled>删除</button>
+  <button id="selExit" type="button">退出</button>
+</div>
+
+<div id="work">
+  <aside id="tree">
+    <div id="treeList"></div>
+    <div id="treeOps">
+      <p id="treeHint"></p>
+      <div class="ops">
+        <button id="opNew">新建</button>
+        <button id="opRename">改名</button>
+        <button id="opMove">移动</button>
+        <button id="opCopy">复制</button>
+        <button id="opDel" class="del">删除</button>
+      </div>
+    </div>
+  </aside>
+
+  <main>
+    <div id="pBar" hidden>
+      <span class="txt" id="pBarText"></span>
+      <button id="pBarOpen" type="button">去命名</button>
+      <button id="pBarCancel" type="button">取消</button>
+    </div>
+
+    <div id="pending" hidden>
+      <div id="pHead">
+        <h2 id="pTitle"></h2>
+        <span class="sz" id="pSize"></span>
+        <span class="grow"></span>
+        <label>统一前缀
+          <input id="pPrefix" type="text" maxlength="60" autocomplete="off"
+                 spellcheck="false" placeholder="如 EXP0615_">
+        </label>
+        <button id="pPrefixClear" type="button" title="清掉前缀">✕</button>
+        <button id="pToggle" type="button">收起</button>
+      </div>
+      <div id="pRows"></div>
+      <div id="pFoot">
+        <span class="grow"></span>
+        <button id="pConfirm" type="button">确认导入</button>
+        <button id="pCancel" type="button">取消</button>
+      </div>
+    </div>
+
+    <div id="grid"></div>
+    <div id="empty" hidden>
+      <h2 id="emptyTitle"></h2>
+      <p id="emptyText"></p>
+      <button id="emptyBtn" hidden></button>
+    </div>
+  </main>
+</div>
+
+<footer id="pager" hidden>
+  <button id="prev">上一页</button>
+  <span class="pos" id="pos"></span>
+  <button id="next">下一页</button>
+</footer>
+
+<div id="overlay" hidden>
+  <div id="dlg" role="dialog" aria-modal="true" aria-labelledby="dlgTitle">
+    <h2 id="dlgTitle"></h2>
+    <p id="dlgHint"></p>
+    <div id="dlgBody"></div>
+    <div id="dlgBtns"></div>
+  </div>
+</div>
+<div id="toast" hidden></div>
+<div id="drop">
+  <div>
+    <h2>松手就导入</h2>
+    <p>支持 JPG / PNG / TIF / BMP，可以一次拖好几张</p>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+const PER_PAGE = 24;          // 需求文档 §3.2.1 举的例子，一屏 24 张
+const $ = id => document.getElementById(id);
+
+// 筛选条件全放在网址里（?q=&order=&status=&folder=&page=）：
+// 刷新、前进后退、把链接发给别人，都会回到同一屏。
+// folder 是字符串：'' = 全部照片，'0' = 未分类，其余 = 文件夹 id。
+const S = { q: '', order: 'time_desc', status: 'all', folder: '', page: 1, total: 0 };
+
+// 文件夹树（接口拿回来的原样），画树和算子树都靠它
+let TREE = { items: [], total: 0, uncategorized: 0 };
+let searchTimer = null;
+
+// 选择模式。存具体 id，不做 all/except 三态 —— 「选中全部」就是把 id 拉成一张清单。
+// ⚠️ 常量对象，只改字段不整体重新赋值：行为检查脚本抓的是这个引用。
+const SEL = { on: false, ids: new Set() };
+const SEL_KEY = 'jltx.sel';
+
+// 最近一次渲染出来的 items（由 renderGrid 自己维护，见 Step 4）。
+// 退出选择模式要重画卡片上的勾，靠它，不再多跑一次网络请求。
+let LAST = [];
+
+function readSel() {
+  try {
+    const s = JSON.parse(localStorage.getItem(SEL_KEY) || 'null');
+    if (s && s.on) {
+      SEL.on = true;
+      SEL.ids = new Set((s.ids || []).map(Number));
+    }
+  } catch { /* 存坏了就当没开 */ }
+}
+
+function saveSel() {
+  try {
+    localStorage.setItem(SEL_KEY, JSON.stringify({ on: SEL.on, ids: [...SEL.ids] }));
+  } catch { /* 存不下就算了，不该因此让页面出问题 */ }
+}
+
+function selIds() { return [...SEL.ids]; }
+
+function paintSel() {
+  document.body.classList.toggle('selmode', SEL.on);
+  $('selBar').hidden = !SEL.on;
+  if (!SEL.on) return;
+
+  $('selCount').textContent = `已选 ${SEL.ids.size} 张`;
+  // 一张没勾时禁用：不禁用的话点「删除」会弹出一个「删掉 0 张照片」的确认框
+  $('selArchive').disabled = SEL.ids.size === 0;
+  $('selDelete').disabled = SEL.ids.size === 0;
+  $('selTag').disabled = SEL.ids.size === 0;
+  $('selExport').disabled = SEL.ids.size === 0;
+
+  // 「选中全部 N 张」只在两件事同时成立时出现：
+  // ① 当前页全被勾上 ② 确实还有没勾到的（Gmail 那种做法）
+  const pageIds = [...$('grid').querySelectorAll('.card')].map(c => Number(c.dataset.id));
+  const allPage = pageIds.length > 0 && pageIds.every(id => SEL.ids.has(id));
+  $('selAll').hidden = !(allPage && S.total > SEL.ids.size);
+  $('selAll').textContent = `选中全部 ${S.total} 张`;
+}
+
+// 只改这一张卡片的描边，不重画整个格子墙 —— 点一下重画 24 张卡会闪
+function toggleSel(id) {
+  if (SEL.ids.has(id)) SEL.ids.delete(id); else SEL.ids.add(id);
+  saveSel();
+  const card = $('grid').querySelector(`.card[data-id="${id}"]`);
+  if (card) card.classList.toggle('on', SEL.ids.has(id));
+  paintSel();
+}
+
+function setSelMode(on) {
+  SEL.on = on;
+  if (!on) SEL.ids.clear();          // 退出时顺手清空：下次进来是干净的
+  saveSel();
+  renderGrid(LAST);                  // 卡片上的勾是画在卡片里的，得重画才对得上
+  paintSel();
+}
+
+// ---------- 地址栏 ----------
+
+function readUrl() {
+  const u = new URLSearchParams(location.search);
+  S.q = u.get('q') || '';
+  S.order = u.get('order') || 'time_desc';
+  S.status = u.get('status') || 'all';
+  S.folder = u.get('folder') || '';
+  S.page = Math.max(1, Number(u.get('page')) || 1);
+  $('q').value = S.q;
+  $('order').value = S.order;
+  $('status').value = S.status;
+}
+
+function writeUrl() {
+  const u = new URLSearchParams();
+  if (S.q) u.set('q', S.q);
+  if (S.order !== 'time_desc') u.set('order', S.order);
+  if (S.status !== 'all') u.set('status', S.status);
+  if (S.folder !== '') u.set('folder', S.folder);
+  if (S.page > 1) u.set('page', String(S.page));
+  // replaceState 而不是 pushState：筛选是「原地换个看法」，不该在后退键里堆一大串
+  history.replaceState(null, '', u.toString() ? '?' + u.toString() : location.pathname);
+}
+
+// ---------- 画格子 ----------
+
+// 缩略图的地址。**尾巴上那串不是装饰，是版本号。**
+//
+// 缩略图上是画了测量线和标尺的（标定过的图，见服务端 thumbs._annotated）。
+// 库里的小图按 image_id 缓存，服务端改了会主动删掉重做 —— 但**浏览器不知道**：
+// URL 没变，它就接着用自己手上那张。表现是"线都量好了，图库里还是张光图"。
+//
+// `thumb_ver` 由服务端算：裁剪 / 画质 / 每条线的位置合起来的一个数。它一变
+// 地址就变，浏览器只能去拿新的。服务端不声明这个参数，直接忽略。
+function thumbURL(it) {
+  return `/api/images/${it.id}/thumb?v=${it.thumb_ver || 0}`;
+}
+
+function fmtTime(t) {
+  const d = new Date(t * 1000);
+  const p = n => String(n).padStart(2, '0');
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function fmtFull(t) {
+  const d = new Date(t * 1000);
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function makeCard(it) {
+  const a = document.createElement('a');
+  a.className = 'open';
+  // 带上当前文件夹范围：图库点了哪个文件夹进来，测量页的下拉框就只列那批
+  a.href = `/?id=${it.id}` + (S.folder === '' ? '' : `&folder=${S.folder}`);
+  a.title = `${it.name}\n导入于 ${fmtFull(it.import_time)}`;
+  // 选择模式下整张卡片是勾选开关，不再跳去测量页
+  a.addEventListener('click', e => {
+    if (!SEL.on) return;
+    e.preventDefault();
+    toggleSel(it.id);
+  });
+
+  const shot = document.createElement('div');
+  shot.className = 'shot';
+  const im = document.createElement('img');
+  im.loading = 'lazy';
+  im.alt = '';                                   // 名字就在下面一行，重复念一遍很吵
+  im.src = thumbURL(it);
+  im.addEventListener('error', () => shot.classList.add('bad'));
+  const tick = document.createElement('span');
+  tick.className = 'tick';
+  tick.textContent = '✓';            // 颜色由 CSS 控制：没勾上是透明的
+  shot.append(im, tick);
+
+  const body = document.createElement('div');
+  body.className = 'body';
+
+  const name = document.createElement('p');
+  name.className = 'name';
+  name.textContent = it.name;                    // textContent：名字是用户打的，别走 innerHTML
+
+  const meta = document.createElement('p');
+  meta.className = 'meta';
+  const when = document.createElement('span');
+  when.textContent = fmtTime(it.import_time);
+  const state = document.createElement('span');
+  if (it.line_count) {
+    state.className = 'done';
+    state.textContent = `已量 ${it.line_count} 条`;
+  } else {
+    state.textContent = '未测量';
+  }
+  meta.append(when, state);
+
+  body.append(name, meta);
+  a.append(shot, body);
+
+  // 这一行既是「这张图归档在哪」的信息，也是改它的入口
+  const names = it.folders.map(folderName).filter(Boolean);
+  const file = document.createElement('button');
+  file.type = 'button';
+  file.className = 'file';
+  // 有名字 = 已归档，是动词 = 还没归档。一眼就能扫出哪些还没归置。
+  if (names.length) {
+    file.textContent = names.join(' · ');
+    file.title = '点击改放进哪些文件夹';
+  } else {
+    file.textContent = '归档…';
+    file.title = '放进文件夹';
+  }
+  file.addEventListener('click', () => archiveImage(it));
+
+  // 标签：既是"这个孔是哪一个"的信息，也是改它的入口。和「归档…」并排。
+  const tag = document.createElement('button');
+  tag.type = 'button';
+  tag.className = 'file';
+  const t0 = (it.tags || [])[0];
+  if (t0) {
+    tag.textContent = t0;
+    tag.title = '点击改孔位标签';
+  } else {
+    tag.textContent = '标签…';
+    tag.title = '标上这是哪个孔';
+  }
+  tag.addEventListener('click', () => { tagImages([it]); });
+
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.dataset.id = String(it.id);   // 选择模式靠它找卡片
+  if (SEL.ids.has(it.id)) card.classList.add('on');
+  card.append(a, file, tag);
+  return card;
+}
+
+function showEmpty(title, text, btnLabel, btnFn) {
+  $('emptyTitle').textContent = title;
+  $('emptyText').textContent = text;
+  const b = $('emptyBtn');
+  b.hidden = !btnLabel;
+  b.textContent = btnLabel || '';
+  b.onclick = btnFn || null;
+  $('empty').hidden = false;
+}
+
+function renderGrid(items) {
+  LAST = items;                  // 退出选择模式要重画勾，靠它，不再多跑一次网络请求
+  const g = $('grid');
+  g.innerHTML = '';
+  if (!items.length) {
+    $('pager').hidden = true;
+    // 空库 / 筛完没剩下 / 文件夹是空的，是三回事，提示语不能混：
+    // 一个教怎么导入，一个教怎么退回去，一个教怎么把照片放进来。
+    if (S.q || S.status !== 'all') {
+      showEmpty('没有符合条件的照片',
+                S.q ? `名字里没有带「${S.q}」的。` : '这个筛选条件下没有照片。',
+                '清除筛选', () => {
+                  S.q = ''; S.status = 'all'; S.folder = ''; S.page = 1;
+                  $('q').value = ''; $('status').value = 'all';
+                  paintTree(); load();
+                });
+    } else if (S.folder !== '') {
+      showEmpty(S.folder === '0' ? '没有未分类的照片' : '这个文件夹里还没有照片',
+                '在每张照片下面点「归档…」，就能把它放进来。',
+                '看全部照片', () => {
+                  S.folder = ''; S.page = 1; paintTree(); load();
+                });
+    } else {
+      showEmpty('图库还是空的',
+                '点右上角的「导入照片」，或者把照片直接拖到这个页面上，也可以用手机扫码传。',
+                '导入照片', () => $('filePick').click());
+    }
+    return;
+  }
+  $('empty').hidden = true;
+  for (const it of items) g.append(makeCard(it));
+}
+
+function renderPager() {
+  const pages = Math.max(1, Math.ceil(S.total / PER_PAGE));
+  if (S.page > pages) { S.page = pages; return load(); }   // 删图/改筛选后页码越界了
+  $('pager').hidden = pages <= 1;
+  $('pos').textContent = `第 ${S.page} / ${pages} 页`;
+  $('prev').disabled = S.page <= 1;
+  $('next').disabled = S.page >= pages;
+}
+
+// ---------- 拉数据 ----------
+
+async function load() {
+  writeUrl();
+  const u = new URLSearchParams({
+    limit: String(PER_PAGE),
+    offset: String((S.page - 1) * PER_PAGE),
+    order: S.order, status: S.status, q: S.q,
+  });
+  if (S.folder !== '') u.set('folder', S.folder);
+  try {
+    const r = await fetch('/api/images?' + u.toString());
+    if (!r.ok) throw new Error();
+    const d = await r.json();
+    S.total = d.total;
+    $('count').textContent = S.total ? `共 ${S.total} 张` : '';
+    renderGrid(d.items);
+    renderPager();
+    paintSel();
+  } catch {
+    $('count').textContent = '';
+    $('pager').hidden = true;
+    showEmpty('读不到图库', '工具可能刚重启过。刷新一下这个页面试试。');
+  }
+}
+
+// ---------- 交互 ----------
+
+$('q').addEventListener('input', () => {
+  clearTimeout(searchTimer);
+  // 防抖：每敲一个字就查一次的话，中文输入法打一个词要发好几次请求
+  searchTimer = setTimeout(() => {
+    S.q = $('q').value.trim();
+    S.page = 1;
+    load();
+  }, 250);
+});
+
+$('order').addEventListener('change', () => {
+  S.order = $('order').value; S.page = 1; load();
+});
+
+$('status').addEventListener('change', () => {
+  S.status = $('status').value; S.page = 1; load();
+});
+
+function gotoPage(n) {
+  S.page = n;
+  load();
+  document.querySelector('main').scrollTop = 0;
+}
+
+$('prev').addEventListener('click', () => { if (S.page > 1) gotoPage(S.page - 1); });
+$('next').addEventListener('click', () => gotoPage(S.page + 1));
+
+// ---------- 一句话提示 ----------
+
+let toastTimer = null;
+
+function toast(msg) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.hidden = true; }, 5000);
+}
+
+// 所有写操作都走这里。失败时把服务端那句中文原样弹出来 —— 那些话本来就是给用户看的。
+async function send(url, method, body) {
+  let r;
+  try {
+    r = await fetch(url, {
+      method,
+      headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch {
+    toast('连不上工具。它可能刚重启过，刷新一下页面试试。');
+    return null;
+  }
+  if (!r.ok) {
+    let msg = '没成功。工具可能刚重启过，刷新一下页面试试。';
+    try {
+      const d = await r.json();
+      if (typeof d.detail === 'string') msg = d.detail;
+    } catch { /* 服务端没给 JSON，用上面那句兜底 */ }
+    toast(msg);
+    return null;
+  }
+  try {
+    return await r.json();
+  } catch {
+    // 200 但响应体不是 JSON（代理插了一页 HTML、工具重启到一半…）。
+    // ⚠️ 这里必须返回 null，不能返回 {}：{} 是 truthy，所有 `if (!r) return` 的
+    // 卫语句都会被放过去，然后拿 undefined 当真数据报出去（"已归档 undefined 张"）。
+    toast('工具回了一句看不懂的话，刷新一下页面试试。');
+    return null;
+  }
+}
+
+// ---------- 导入（拖拽 / 粘贴 / 选文件 / 手机扫码都在图库这一处） ----------
+
+function isTyping() {
+  const a = document.activeElement;
+  return !!a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.isContentEditable);
+}
+
+async function uploadFiles(files) {
+  const list = [...(files || [])];
+  if (!list.length) return;
+
+  const fd = new FormData();
+  for (const f of list) fd.append('files', f, f.name);
+
+  toast(`正在导入 ${list.length} 张…`);
+  try {
+    const r = await fetch('/api/images/upload', { method: 'POST', body: fd });
+    if (!r.ok) {
+      let msg = '导入没成功。工具可能刚重启过，刷新一下页面试试。';
+      try {
+        const e = await r.json();
+        if (typeof e.detail === 'string') msg = e.detail;
+      } catch { /* 服务端没给 JSON，用上面那句兜底 */ }
+      toast(msg);
+      return;
+    }
+    const d = await r.json();
+
+    // 一次 ≥2 张 → 服务端把它们收进「待确认导入列表」。列表就在这一页，原地展开
+    if (d.staged && d.staged.length) {
+      pSetOpen(true);
+      await loadPending();
+      toast(`有 ${d.staged.length} 张要先确认名字，看上面那个列表`);
+      return;
+    }
+
+    if (d.failed.length) {
+      toast(`导入 ${d.ok.length} 张，${d.failed.length} 张没成功：`
+            + d.failed.map(f => `${f.name}（${f.reason}）`).join('；'));
+    } else if (d.ok.length) {
+      toast(`导入 ${d.ok.length} 张`);
+    }
+    await reload();
+  } catch {
+    toast('连不上工具。它可能刚重启过，刷新一下页面试试。');
+  }
+}
+
+$('gImport').addEventListener('click', () => $('filePick').click());
+$('filePick').addEventListener('change', async e => {
+  const files = [...e.target.files];
+  e.target.value = '';               // 清空才能再选同一张
+  await uploadFiles(files);
+});
+
+// ⚠️ 必须挂在 document 上。只挂某个区域的话，拖偏一点松手，浏览器会**直接导航到那个文件**，
+// 当前的筛选、页码、滚动位置全丢。
+let dragDepth = 0;
+document.addEventListener('dragenter', e => {
+  if (!e.dataTransfer || ![...e.dataTransfer.types].includes('Files')) return;
+  e.preventDefault();
+  dragDepth++;
+  document.body.classList.add('dragging');
+});
+document.addEventListener('dragover', e => e.preventDefault());
+document.addEventListener('dragleave', () => {
+  if (--dragDepth <= 0) { dragDepth = 0; document.body.classList.remove('dragging'); }
+});
+document.addEventListener('drop', async e => {
+  e.preventDefault();
+  dragDepth = 0;
+  document.body.classList.remove('dragging');
+  const files = [...((e.dataTransfer && e.dataTransfer.files) || [])];
+  if (files.length) await uploadFiles(files);
+});
+
+window.addEventListener('paste', async e => {
+  if (isTyping()) return;            // 在搜索框/改名字里粘贴时别抢
+  const files = [...((e.clipboardData && e.clipboardData.items) || [])]
+    .filter(i => i.kind === 'file' && i.type.startsWith('image/'))
+    .map(i => i.getAsFile()).filter(Boolean);
+  if (!files.length) return;         // 不是图片就交给浏览器自己处理
+  e.preventDefault();
+  await uploadFiles(files);
+});
+
+// 手机传图。二维码塞进弹窗，不塞侧栏 —— 侧栏是文件夹树，二维码是两码事。
+$('gMobile').addEventListener('click', async () => {
+  const wrap = document.createElement('div');
+  wrap.className = 'qrbox';
+  const img = document.createElement('img');
+  img.alt = '用手机相机扫这个码';
+  const addr = document.createElement('p');
+  addr.className = 'qraddr';
+  addr.textContent = '正在准备…';
+  const pick = document.createElement('div');   // 有多张网卡时才往里放下拉框
+  const tip = document.createElement('p');
+  tip.className = 'qrhint';
+  wrap.append(img, addr, pick, tip);
+
+  // 先把弹窗亮出来再取数据：取不到也至少看得见一句人话，不是干等
+  const done = ask('手机传图', '手机和电脑连同一个 WiFi，扫码就能把照片传进来。', wrap,
+                   [{ label: '关闭', value: null }]);
+  try {
+    const r = await fetch('/api/net/enable', { method: 'POST' });
+    if (!r.ok) throw new Error();
+    const d = await (await fetch('/api/net/info')).json();
+    // urls[0] 是探测出来的首选地址；下面那行地址一定要显示出来 ——
+    // 扫不出来时用户还能自己照着敲，或者发到微信里点开
+    addr.textContent = d.urls[0] || '没找到能用的地址';
+    img.src = '/api/net/qrcode?i=0';
+    // 这台电脑常带 Hyper-V / WSL / VMware / VPN 虚拟网卡，VPN 一开默认路由就指向它。
+    // urls[0] 就是走默认路由的那张 —— 手机扫了连不上时，必须能换一张。
+    if (d.urls.length >= 2) {
+      // 一排光秃秃的地址没人看得懂 —— 先写清楚这是干嘛的
+      const lab = document.createElement('p');
+      lab.className = 'qrpick';
+      lab.textContent = '手机连不上？换下面这张网卡再试';
+      pick.append(lab);
+      const sel = document.createElement('select');
+      d.urls.forEach((u, i) => {
+        const o = document.createElement('option');
+        o.value = String(i);
+        o.textContent = u;
+        sel.append(o);
+      });
+      sel.addEventListener('change', () => {
+        addr.textContent = d.urls[sel.value] || '没找到能用的地址';
+        img.src = `/api/net/qrcode?i=${sel.value}`;
+      });
+      pick.append(sel);
+    }
+    tip.textContent = `还有约 ${Math.ceil(d.expires_in / 60)} 分钟有效。`
+                    + '手机要连同一个 WiFi（不是流量）。扫不出来，把上面那行地址发到手机里点开。';
+  } catch {
+    addr.textContent = '打不开手机传图';
+    tip.textContent = '工具可能刚重启过。关掉这个窗口，刷新一下页面试试。';
+  }
+  await done;
+});
+
+// ---------- 待确认导入（需求 §3.1.3） ----------
+//
+// 列表整个存在服务端（pending_imports 表 + data/staging/ 里的真文件），
+// 所以刷新、关浏览器、重启工具，它都还在。必须这样：手机和电脑要看同一份。
+let P = { items: [], prefix: '', total_size: 0, ok_count: 0, failed_count: 0 };
+
+// 统一前缀：防抖 300ms + 已经发出去、还没回来的那次 PUT。
+// ⚠️ 和名字是同一个坑：确认导入之前**必须**先把用户刚打的前缀送到服务端 ——
+// 服务端是拿「前缀 + 名字」给整批照片起名的，晚一步整批就按旧前缀（甚至空前缀）
+// 入库了，而提示语只会说「导入 N 张」，用户根本看不出名字不对。
+let pPrefixTimer = null;
+let pPrefixFlight = null;   // { value, promise } —— 已经发出去、还没回来的那次
+let pPrefixKnown = null;    // 服务端确认过的前缀（它上次告诉我们的）：同一个值不重复发
+let pPrefixFlushing = false; // 正在把"还没发出去的那个前缀"冲出去：这期间别动输入框
+
+// 每一行**自己**一个待发保存。⚠️ 不能用模块级单个定时器：那样在 A 行打完名字、
+// 300ms 内切到 B 行打字，A 那个 setTimeout 会被 clearTimeout 掉 —— A 的名字永远
+// 没发出去，而输入框里还显示着用户打的名字，他以为改好了（名字是预填的、不是空的，
+// 所以确认时 unnamed 是 0，连一句提示都不会有）。
+// 形状：行 id -> { timer, value }
+const pSaves = new Map();
+
+const fmtSize = n => n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB'
+                                  : Math.max(1, Math.round(n / 1024)) + ' KB';
+
+// 展开/收起也存在本地 —— ⭐ 刷新要保持现状，用户收起之后刷新不该又弹开
+function pIsOpen() { return localStorage.getItem('jltx.pendingOpen') !== '0'; }
+
+function pSetOpen(open) {
+  localStorage.setItem('jltx.pendingOpen', open ? '1' : '0');
+  paintPending();
+}
+
+function setPending(d) {
+  // 服务端不存"用户标了要覆盖"这件事（那是确认那一刻的选择），重画时要自己留住
+  const ow = new Set((P.items || []).filter(x => x._ow).map(x => x.id));
+  P = d;
+  P.items = P.items || [];
+  pPrefixKnown = P.prefix;    // 服务端刚说了它的前缀是这个 → 同一个值不用再发一遍
+  for (const it of P.items) it._ow = ow.has(it.id);
+  paintPending();
+}
+
+function paintPending() {
+  const has = P.items.length > 0;
+  const open = has && pIsOpen();
+  $('pBar').hidden = !has || open;
+  $('pending').hidden = !has || !open;   // ⚠️ 这里必须是 !open：写成 open 的话
+                                         // 展开时 #pending 也被藏起来，而 .pending-open
+                                         // 又把格子墙藏了 —— 整个主区域全空
+  document.body.classList.toggle('pending-open', open);
+  if (!has) { $('pRows').innerHTML = ''; return; }
+
+  const failed = P.failed_count ? `，还有 ${P.failed_count} 张没成功` : '';
+  $('pTitle').textContent = `待确认导入（${P.ok_count} 张${failed}）`;
+  $('pSize').textContent = `共 ${fmtSize(P.total_size)}`;
+  $('pBarText').innerHTML = '';
+  $('pBarText').append(
+    Object.assign(document.createElement('b'), { textContent: `${P.ok_count} 张照片` }),
+    document.createTextNode(` · ${fmtSize(P.total_size)} 还没进图库`));
+
+  // 还有没送出去的前缀（用户在等这次请求的路上又打了字，或者正冲着呢）→
+  // 输入框里那个新值说了算，别拿刚回来的旧值把它冲掉；
+  // 它自己有定时器（或正被 flush 送出去），发出去之后服务端就是它了。
+  // ⚠️ pPrefixFlushing 这一条不能漏：flush 一上来就把定时器清了，只判定时器的话
+  // 它在 flush 期间恒为假 —— 等在飞的那次一回来就会把用户刚打的新值顶成旧值。
+  if ($('pPrefix').value !== P.prefix && !pPrefixTimer && !pPrefixFlushing) {
+    $('pPrefix').value = P.prefix;
+  }
+
+  const rows = $('pRows');
+  rows.innerHTML = '';
+  for (const it of P.items) rows.append(pRowEl(it));
+}
+
+function pRowEl(it) {
+  const row = document.createElement('div');
+  row.dataset.pid = it.id;          // pPatchName 靠它找回「现在屏幕上这一行」
+  // 行级的红框（ow）不在这里定 —— 由 paintWarn 统一同步，两处各写一遍必然对不上
+  row.className = 'prow' + (it.status === 'failed' ? ' bad' : '');
+
+  const shot = document.createElement('div');
+  shot.className = 'shot' + (it.status === 'failed' ? ' none' : '');
+  if (it.status === 'ok') {
+    const img = document.createElement('img');
+    img.src = `/api/imports/${it.id}/thumb`;
+    img.alt = '';
+    img.loading = 'lazy';
+    img.addEventListener('error', () => { shot.className = 'shot none'; img.remove(); });
+    shot.append(img);
+  }
+  row.append(shot);
+
+  const info = document.createElement('div');
+  info.className = 'info';
+
+  const orig = document.createElement('div');
+  orig.className = 'orig';
+  orig.textContent = `${it.original_filename} · ${fmtSize(it.size)}`;
+  info.append(orig);
+
+  const line = document.createElement('div');
+  line.className = 'line';
+  const pfx = document.createElement('span');
+  pfx.className = 'pfx';
+  pfx.textContent = it.status === 'ok' ? P.prefix : '';
+
+  const inp = document.createElement('input');
+  inp.className = 'pname';
+  inp.type = 'text';
+  // 有还没发出去的保存 → 输入框显示用户打的字（否则重画一次字就从屏幕上消失，
+  // 而服务端那边其实也没存下）
+  const queued = pSaves.get(it.id);
+  inp.value = queued ? queued.value : it.name;
+  inp.placeholder = '留空就用原始文件名';
+  inp.maxLength = Math.max(1, 100 - P.prefix.length);   // 前缀 + 名字不能超过 100
+  line.append(pfx, inp);
+
+  const rm = document.createElement('button');
+  rm.className = 'rm';
+  rm.type = 'button';
+  rm.title = '移除这一张';
+  rm.textContent = '✕';
+  rm.addEventListener('click', async () => {
+    await pFlushNames();                      // 先把其余行刚打的字发出去，再整表重画
+    const d = await send(`/api/imports/${it.id}`, 'DELETE');
+    if (d) setPending(d);
+  });
+  line.append(rm);
+  info.append(line);
+
+  // ⚠️ 失败的行**也**要能改名：暂存成功、只是这一次没进库的行（名字超长最现实）
+  // 暂存文件还在，改完名字再点一次「确认导入」就能进库 —— 服务端就是这么做的。
+  // 把输入框禁掉的话：改不了、再点还是失败，唯一的出口是 ✕，
+  // 而那会把暂存文件真删掉，照片只能重新拍一遍。
+  inp.addEventListener('input', () => pQueueName(it.id, inp.value));
+
+  let box = null;
+  if (it.status === 'failed') {
+    const why = document.createElement('p');
+    why.className = 'why';
+    // 「没成功」而不是「没读出来」：确认阶段失败的原因（名字太长、写库失败）
+    // 套上「没读出来」就成了"没读出来：名字不能超过 100 个字"，驴唇不对马嘴
+    why.textContent = '没成功：' + (it.reason || '原因不明');
+    info.append(why);
+  } else {
+    box = document.createElement('div');
+    box.className = 'warnbox';
+    info.append(box);
+  }
+
+  row.append(info);
+  // ⚠️ 必须等 box 进了 DOM 再画：paintWarn 要顺手把这一行的红框同步掉，而它
+  // 是拿 box.closest('.prow') 找行的。挂进树之前调，那一步会被跳过 ——
+  // 行上就会留着一个没有说明的红框（看着像"这张还要覆盖"，其实不生效）。
+  if (box) paintWarn(box, it, inp);
+  return row;
+}
+
+// 排队保存这一行的名字。300ms 内又打字就重排**这一行**的，
+// 别的行排着的保存不受影响。
+function pQueueName(id, value) {
+  pDropSave(id);        // 这一行前一次排队的作废：不能让它回头发出去，顶掉刚打的
+  const timer = setTimeout(() => {
+    pSaves.delete(id);
+    pPatchName(id, value);
+  }, 300);
+  pSaves.set(id, { timer, value });
+}
+
+// 扔掉这一行排队中的保存（还没到那 300ms 的那次）。
+// 任何「直接替这一行定名字」的动作都要先走它 —— 否则排着的那个旧值稍后照发，
+// 把服务端上的名字覆盖回来，而屏幕上显示的已经是新名字了。
+function pDropSave(id) {
+  const q = pSaves.get(id);
+  if (q) { clearTimeout(q.timer); pSaves.delete(id); }
+}
+
+// 把还在等那 300ms 的保存立刻都发出去，并等服务器都收下为止。
+// 改前缀 / 移除一行 / 确认导入之前都要先跑它 —— 否则用户最后打的几个字会赶不上：
+// 重画时被服务端的旧值顶掉，或者确认请求带着旧名字把照片存进图库。
+async function pFlushNames() {
+  const jobs = [...pSaves.entries()];
+  pSaves.clear();
+  await Promise.all(jobs.map(([id, s]) => {
+    clearTimeout(s.timer);
+    return pPatchName(id, s.value);
+  }));
+}
+
+// 把前缀发到服务端。串行 + 同一个值不重复发：两个 PUT 并发时回来的顺序不定，
+// 服务端可能停在旧值上；而防抖定时器刚发出去的那次，flush 等它落地就够了。
+function pSendPrefix(value) {
+  const prev = pPrefixFlight;
+  const promise = (async () => {
+    if (prev) await prev.promise;
+    await pFlushNames();     // 这次请求回来会整表重画（冲突也是服务端拿名字算的）
+    const d = await send('/api/imports/prefix', 'PUT', { prefix: value });
+    if (d) setPending(d);
+    else pPrefixKnown = null;   // 没成功 → 不知道服务端现在是什么，逼下一次真的发
+    return d;
+  })();
+  pPrefixFlight = { value, promise };
+  const settled = () => {                     // 落地后把自己从 pPrefixFlight 上摘掉
+    if (pPrefixFlight && pPrefixFlight.promise === promise) pPrefixFlight = null;
+  };
+  promise.then(settled, settled);
+  return promise;
+}
+
+// 把还没发出去的前缀立刻送出去，并等服务器收下 —— 确认导入之前必须跑到这一步。
+// 返回之后服务端存的前缀就是输入框里的字。
+async function pFlushPrefix() {
+  if (pPrefixTimer) { clearTimeout(pPrefixTimer); pPrefixTimer = null; }
+  // ⚠️ 要发的字**等之前先记下来**：等在飞的那次时它的响应会回来重画，
+  // 那会儿定时器已经被清掉了，输入框会被服务端的旧值顶掉 ——
+  // 照着被顶掉的值发就等于什么都没修（发的还是旧前缀）。
+  const v = $('pPrefix').value;
+  pPrefixFlushing = true;                          // 这期间 paintPending 不许动输入框
+  try {
+    if (pPrefixFlight) await pPrefixFlight.promise; // 已经上路的先落地，别和它抢
+    if (pPrefixKnown === v) return;                // 服务端已经是这个值了 → 不补第二枪
+    await pSendPrefix(v);
+  } finally {
+    pPrefixFlushing = false;
+  }
+}
+
+function paintWarn(box, it, inp) {
+  box.innerHTML = '';
+  const c = it.conflict;
+  // 冲突没了（用户改了个不撞的名字）就顺手把覆盖标记清掉 ——
+  // 否则会留下一行红框却没有任何说明
+  if (!c) it._ow = false;
+  box.className = 'warnbox' + (it._ow ? ' ow' : '');
+  const row = box.closest('.prow');
+  if (row) row.classList.toggle('ow', !!it._ow);
+
+  if (it._ow && c) {
+    const p = document.createElement('p');
+    p.textContent = `已标记覆盖：导入后「${c.name}」会被删掉，`
+                  + `它量过的 ${c.line_count} 条线一起永久消失。`;
+    const bar = document.createElement('div');
+    bar.className = 'wbtns';
+    const undo = document.createElement('button');
+    undo.type = 'button';
+    undo.textContent = '不覆盖了';
+    undo.addEventListener('click', () => { it._ow = false; paintWarn(box, it, inp); });
+    bar.append(undo);
+    box.append(p, bar);
+    return;
+  }
+
+  box.hidden = !c;
+  if (!c) return;
+
+  const p = document.createElement('p');
+  p.textContent = `图库里已经有一张叫「${c.name}」的照片`
+                + (c.line_count ? `，它量过 ${c.line_count} 条线` : '，还没量过');
+  const bar = document.createElement('div');
+  bar.className = 'wbtns';
+
+  const b1 = document.createElement('button');
+  b1.type = 'button';
+  b1.textContent = '自动加后缀';
+  b1.addEventListener('click', () => {
+    // suggest 是服务端按库里的实际情况算好的，别在前端自己猜「(2)」
+    inp.value = c.suggest.slice(P.prefix.length);
+    // 和手动打字走同一条路：先把这一行排队中的保存扔掉，再按建议名发出去。
+    // 不扔的话 300ms 后那个旧值会发出去，服务端存回手打的那个名字，
+    // 而屏幕上显示的是建议名、警告条也是按另一个名字画的 —— 两边自相矛盾。
+    pDropSave(it.id);
+    pPatchName(it.id, inp.value);
+  });
+
+  const b2 = document.createElement('button');
+  b2.type = 'button';
+  b2.textContent = '手动改';
+  b2.addEventListener('click', () => inp.focus());
+
+  const b3 = document.createElement('button');
+  b3.type = 'button';
+  b3.className = 'danger';
+  b3.textContent = '覆盖原图像';
+  b3.addEventListener('click', () => { it._ow = true; paintWarn(box, it, inp); });
+
+  bar.append(b1, b2, b3);
+  box.append(p, bar);
+}
+
+async function pPatchName(id, name) {
+  const d = await send(`/api/imports/${id}`, 'PATCH', { name });
+  if (!d) return;
+  // 只更新这一行的冲突状态 —— 整块重画会把用户正在打字的光标顶掉
+  const it = P.items.find(x => x.id === id);
+  if (!it) return;
+  it.name = d.name;
+  it.conflict = d.conflict;
+  // ⚠️ status / reason 也必须一起更新：paintPending 整表重画时是照着 P.items
+  // 重新画每一行的，而 pRowEl 靠这两个字段决定要不要画红字和 .bad。
+  // 漏掉的话「收起」再点「去命名」展开（= 一次整表重画）就把改名前的旧状态
+  // 画回来了：红字回来了、冲突提示也没了（失败行不画冲突框）。
+  it.status = d.status;
+  it.reason = d.reason;
+  // 现查一次 DOM：等服务器回话的这段时间里整表可能已经重画过
+  //（改前缀、收起来再展开），手里那个旧的 box 已经不在屏幕上了
+  const row = $('pRows').querySelector(`.prow[data-pid="${id}"]`);
+  const box = row && row.querySelector('.warnbox');
+  const inp = row && row.querySelector('input.pname');
+  // ⚠️ PATCH 在路上时整表可能已经重画过，框里被填回服务端的**旧**名字。
+  // 不回填的话屏幕上写着旧名、服务端存的是新名，两边说的不是一件事。
+  // 但用户此刻正在这个框里打字时不能动它 —— 一回填就把光标顶掉了。
+  if (inp && document.activeElement !== inp) inp.value = it.name;
+
+  // 这一行原来是失败行，名字改对了之后服务端说它能进库了（status 回到 ok）——
+  // 把上次那句红字撤掉，换成冲突提示框。不撤的话屏幕上挂着「名字不能超过 100 个字」，
+  // 而它早就不成立了，用户会以为还是坏的。
+  // 只动旁边那个 <p>，不重画整行 —— 重画会把用户的光标顶掉。
+  let target = box;
+  if (d.status === 'ok' && row && !box) {
+    const why = row.querySelector('.why');
+    if (why) {
+      why.remove();
+      target = document.createElement('div');
+      target.className = 'warnbox';
+      row.querySelector('.info').append(target);
+    }
+  }
+  if (target && inp) paintWarn(target, it, inp);
+}
+
+async function loadPending() {
+  try {
+    const r = await fetch('/api/imports');
+    if (!r.ok) throw new Error();
+    setPending(await r.json());
+  } catch {
+    setPending({ items: [], prefix: '', total_size: 0, ok_count: 0, failed_count: 0 });
+  }
+}
+
+$('pToggle').addEventListener('click', () => pSetOpen(false));
+$('pBarOpen').addEventListener('click', () => pSetOpen(true));
+$('pBarCancel').addEventListener('click', () => $('pCancel').click());
+$('pPrefixClear').addEventListener('click', async () => {
+  $('pPrefix').value = '';
+  await pFlushNames();      // 重画之前先把各行的名字发出去，别让它们被旧值顶掉
+  await pFlushPrefix();     // 清掉还没到点的定时器，把「空前缀」送出去（走和确认同一条路）
+});
+
+$('pPrefix').addEventListener('input', () => {
+  clearTimeout(pPrefixTimer);
+  // 防抖：每敲一个字就去改全部行的冲突状态太浪费
+  pPrefixTimer = setTimeout(() => {
+    pPrefixTimer = null;                // 到点了：待发的没了，发出去的这次记在 pPrefixFlight 上
+    pSendPrefix($('pPrefix').value);    // 发的是这一刻输入框里的字，不是排队那会儿的
+  }, 300);
+});
+
+$('pConfirm').addEventListener('click', async () => {
+  const btn = $('pConfirm');
+  if (btn.disabled) return;                 // 正在导入中，再点也没用
+  // 点下去立刻锁住按钮、换一句看得懂的文案：下面要冲名字、冲前缀、再拉一次列表，
+  // 好几个来回。不吭声的话用户以为没反应，会再点一下 —— 而服务端那两次确认
+  // 是真的并行跑，同一批照片就入库两遍了。
+  btn.disabled = true;
+  btn.textContent = '正在导入…';
+  try {
+    // 先把 300ms 内刚打的字和前缀发出去：确认要带着它们，下面的条数也要按新名字算
+    await pFlushNames();
+    await pFlushPrefix();     // 前缀晚一步 → 整批照片按旧前缀入库，用户完全看不出来
+    // ⚠️ 列表是**全局一份、电脑和手机共用**：手机刚改过名或点过确认的话，屏幕上
+    // 这些行和它们的 conflict 已经是旧的了，而服务端是按**当下**的「前缀+名字」
+    // 重算再删的 —— 拿旧数字弹出来的警告，可能对不上真正会被删的那张。
+    await loadPending();      // _ow 标记由 setPending 按 id 保留，用户勾的不丢
+    // 覆盖是拿「前缀+名字」去图库里查的，两行同名时指向的是**同一张**照片。
+    // 服务端只会删它一次（第二行自动加后缀），所以这里按照片去重 ——
+    // 不然弹窗会说"删 2 张"、线数还加两遍。用户正是照着这个数字决定要不要覆盖的，
+    // 而这是唯一会永久毁数据的操作。
+    const ow = [];
+    const photos = new Set();
+    let lines = 0;
+    for (const i of P.items) {
+      if (!i._ow || !i.conflict) continue;
+      ow.push(i.id);
+      if (photos.has(i.conflict.image_id)) continue;
+      photos.add(i.conflict.image_id);
+      lines += i.conflict.line_count || 0;
+    }
+    if (ow.length) {
+      const p = document.createElement('p');
+      p.textContent = `图库里同名的 ${photos.size} 张会被删掉，`
+        + (lines ? `它们量过的 ${lines} 条线会一起永久消失。` : '它们还没量过线。')
+        + '原图文件会挪到 data/trash/，但测量记录不会。';
+      // 默认焦点落在「取消」上 —— 按回车不会误删
+      const ok = await ask('覆盖会永久删掉原来的照片', '', p,
+                           [{ label: '取消', value: false },
+                            { label: '确认覆盖', value: true, danger: true }]);
+      if (!ok) return;
+    }
+
+    const d = await send('/api/imports/confirm', 'POST', { overwrite: ow });
+    if (!d) return;
+    const msgs = [];
+    if (d.imported) msgs.push(`导入 ${d.imported} 张`);
+    // 覆盖掉的到底是谁，事后也要有个交代 —— 不然用户只知道"少了点什么"
+    if (d.overwritten && d.overwritten.length) {
+      msgs.push(`已覆盖 ${d.overwritten.length} 张：${d.overwritten.join('、')}`);
+    }
+    if (d.unnamed) msgs.push(`有 ${d.unnamed} 张图像未命名，已使用原始文件名`);
+    if (d.skipped) msgs.push(`${d.skipped} 张没成功的已经跳过`);
+    // ⚠️ 别凭空把列表设空：服务端是**逐行**确认的，这一次没进去的行（暂存文件没了、
+    // 名字太长、写库失败）会留在列表里带红字原因，本来就是让人改完接着点的。
+    // 凭空清空的话面板整个消失、还有照片挂在暂存区，屏幕上却一句提示都没有。
+    await loadPending();
+    reload();            // 先树后格子：卡片上要写文件夹名字，得先有树
+    if (P.items.length) msgs.push(`还有 ${P.items.length} 张留在列表里，可以改完再点一次「确认导入」`);
+    toast(msgs.length ? msgs.join('；') : '没什么要导入的');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '确认导入';
+  }
+});
+
+$('pCancel').addEventListener('click', async () => {
+  const p = document.createElement('p');
+  p.textContent = `取消后这 ${P.items.length} 张要重新传一遍，确定吗？`;
+  const ok = await ask('取消这次导入', '', p,
+                       [{ label: '再想想', value: false },
+                        { label: '确定取消', value: true, danger: true }]);
+  if (!ok) return;
+  // ⚠️ 先把排队中的改名扔掉再去取消：晚了的话它们会在这之后才发出去，
+  // 那时行已经没了 → 404 → 弹一句「这一行已经不在了」，把「已取消 N 张」盖掉，
+  // 用户以为取消没成功。
+  for (const s of pSaves.values()) clearTimeout(s.timer);
+  pSaves.clear();
+  // 前缀同理：取消会把服务端的前缀清空，晚到的那次 PUT 会把它又设回去
+  clearTimeout(pPrefixTimer);
+  pPrefixTimer = null;
+  const d = await send('/api/imports', 'DELETE');
+  if (!d) return;
+  setPending({ items: [], prefix: '', total_size: 0, ok_count: 0, failed_count: 0 });
+  toast(`已取消 ${d.cleared} 张`);
+});
+
+// ---------- 文件夹树 ----------
+
+function folderName(id) {
+  const f = TREE.items.find(x => x.id === id);
+  return f ? f.name : '';
+}
+
+function currentFolderId() {
+  return (S.folder === '' || S.folder === '0') ? null : Number(S.folder);
+}
+
+// TREE.items 是后端深度优先展开好的：后代紧跟在自己后面、depth 更大。
+// 靠这个顺序就能把整棵子树圈出来，不用再爬一遍 parent_id。
+function subtreeIds(id) {
+  const out = new Set([id]);
+  const at = TREE.items.findIndex(f => f.id === id);
+  if (at < 0) return out;
+  const d = TREE.items[at].depth;
+  for (let i = at + 1; i < TREE.items.length && TREE.items[i].depth > d; i++) {
+    out.add(TREE.items[i].id);
+  }
+  return out;
+}
+
+function updateOps() {
+  const id = currentFolderId();
+  for (const op of ['opRename', 'opMove', 'opCopy', 'opDel']) $(op).disabled = id === null;
+  $('treeHint').textContent = id !== null
+    ? `新建的会放在「${folderName(id)}」里面。`
+    : S.folder === '0'
+      ? '「未分类」不是真的文件夹，它只是还没归档的照片。新建的会放在最外层。'
+      : '新建的文件夹会放在最外层。';
+}
+
+function paintTree() {
+  const list = $('treeList');
+  list.innerHTML = '';
+
+  const row = (value, label, count, depth, special) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'tnode' + (special ? ' special' : '');
+    b.style.paddingLeft = (12 + depth * 13) + 'px';
+    if (value === S.folder) b.setAttribute('aria-current', 'true');
+    const n = document.createElement('span');
+    n.className = 'tname';
+    n.textContent = label;
+    const c = document.createElement('span');
+    c.className = 'tcount';
+    c.textContent = count ? String(count) : '';
+    b.append(n, c);
+    b.addEventListener('click', () => {
+      if (S.folder === value) return;
+      S.folder = value;
+      S.page = 1;
+      paintTree();          // 选中态要立刻变
+      load();               // 数字不会因为换选中而变，树不用重新拉
+    });
+    list.append(b);
+  };
+
+  row('', '全部照片', TREE.total, 0, true);
+  row('0', '未分类', TREE.uncategorized, 0, true);
+  if (TREE.items.length) {
+    const sep = document.createElement('div');
+    sep.className = 'treeSep';
+    list.append(sep);
+  }
+  for (const f of TREE.items) row(String(f.id), f.name, f.count, f.depth, false);
+  updateOps();
+}
+
+async function loadTree() {
+  let d;
+  try {
+    const r = await fetch('/api/folders');
+    if (!r.ok) throw new Error();
+    d = await r.json();
+  } catch {
+    $('treeList').innerHTML = '';
+    const p = document.createElement('p');
+    p.className = 'treeErr';
+    p.textContent = '读不到文件夹';
+    $('treeList').append(p);
+    return;
+  }
+  TREE = d;
+  // 选中的文件夹要是被删了（可能是另一个窗口删的），退回「全部照片」，别卡在空页上
+  if (S.folder !== '' && S.folder !== '0' &&
+      !TREE.items.some(f => String(f.id) === S.folder)) {
+    S.folder = '';
+    S.page = 1;
+    writeUrl();
+  }
+  paintTree();
+}
+
+// ---------- 弹窗 ----------
+//
+// 一个 overlay 走天下：新建/改名用输入框，移动/复制/删除用单选，归档用多选。
+
+let dlgResolve = null;
+
+function finish(v) {
+  $('overlay').hidden = true;
+  const r = dlgResolve;
+  dlgResolve = null;
+  if (r) r(v);
+}
+
+function ask(title, hint, content, buttons) {
+  $('dlgTitle').textContent = title;
+  $('dlgHint').textContent = hint || '';
+  $('dlgHint').hidden = !hint;
+
+  const body = $('dlgBody');
+  body.innerHTML = '';
+  body.append(content);
+
+  const bar = $('dlgBtns');
+  bar.innerHTML = '';
+  for (const b of buttons) {
+    const el = document.createElement('button');
+    el.type = 'button';
+    el.textContent = b.label;
+    if (b.danger) el.className = 'danger';
+    el.addEventListener('click', () => {
+      const v = b.pick ? b.pick() : b.value;
+      // 可选钩子：不合格就别关窗（打标签的查重要用 —— 标红 + 留在窗里改）
+      if (b.check && !b.check(v)) return;
+      finish(v);
+    });
+    bar.append(el);
+  }
+
+  $('overlay').hidden = false;
+  const first = body.querySelector('input, button, textarea') || bar.firstChild;
+  if (first) {
+    first.focus();
+    if (first.type === 'text') first.select();
+  }
+  return new Promise(res => { dlgResolve = res; });
+}
+
+function askText(title, hint, value) {
+  const wrap = document.createElement('div');
+  const inp = document.createElement('input');
+  inp.type = 'text';
+  inp.maxLength = 100;
+  inp.value = value || '';
+  inp.placeholder = '文件夹名字';
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(inp.value.trim() || null); }
+  });
+  wrap.append(inp);
+  return ask(title, hint, wrap, [
+    { label: '取消', value: null },
+    { label: '确定', pick: () => inp.value.trim() || null },
+  ]);
+}
+
+// 单选列表。value 为 'root' 的那项表示「最外层」。
+function askPick(title, hint, items, checked) {
+  const wrap = document.createElement('div');
+  wrap.className = 'pick';
+  for (const it of items) {
+    const lab = document.createElement('label');
+    lab.className = 'pickRow';
+    if (it.depth) lab.style.paddingLeft = (8 + it.depth * 13) + 'px';
+    const rb = document.createElement('input');
+    rb.type = 'radio';
+    rb.name = 'dlgPick';
+    rb.value = String(it.value);
+    rb.checked = String(it.value) === String(checked);
+    if (it.disabled) rb.disabled = true;
+    const tx = document.createElement('span');
+    tx.className = 'lab';
+    tx.textContent = it.label;
+    if (it.note) {
+      const em = document.createElement('em');
+      em.textContent = it.note;
+      tx.append(em);
+    }
+    lab.append(rb, tx);
+    wrap.append(lab);
+  }
+  if (!wrap.querySelector('input:checked')) {
+    const first = wrap.querySelector('input:not([disabled])');
+    if (first) first.checked = true;
+  }
+  return ask(title, hint, wrap, [
+    { label: '取消', value: null },
+    { label: '确定', pick: () => {
+      const c = wrap.querySelector('input:checked');
+      return c ? c.value : null;
+    } },
+  ]);
+}
+
+// 多选列表（归档用）。返回值是 id 数组；取消是 null —— 两者要分得开。
+function askChecks(title, hint, items, checked) {
+  const wrap = document.createElement('div');
+  wrap.className = 'pick';
+  const boxes = [];
+  if (!items.length) {
+    const p = document.createElement('p');
+    p.className = 'pickNone';
+    p.textContent = '还一个文件夹都没有。先在左边点「新建」建一个吧。';
+    wrap.append(p);
+  }
+  for (const it of items) {
+    const lab = document.createElement('label');
+    lab.className = 'pickRow';
+    if (it.depth) lab.style.paddingLeft = (8 + it.depth * 13) + 'px';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = String(it.value);
+    cb.checked = checked.has(it.value);
+    boxes.push(cb);
+    const tx = document.createElement('span');
+    tx.className = 'lab';
+    tx.textContent = it.label;
+    lab.append(cb, tx);
+    wrap.append(lab);
+  }
+  return ask(title, hint, wrap, [
+    { label: '取消', value: null },
+    { label: '保存', pick: () => boxes.filter(b => b.checked).map(b => Number(b.value)) },
+  ]);
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  // 弹窗开着时 Esc 仍然先关弹窗
+  if (!$('overlay').hidden) { e.preventDefault(); finish(null); return; }
+  if (SEL.on) setSelMode(false);
+});
+$('overlay').addEventListener('click', e => {
+  if (e.target === $('overlay')) finish(null);
+});
+
+// ---------- 多选模式的按钮 ----------
+
+$('gSelect').addEventListener('click', () => setSelMode(!SEL.on));
+$('selExit').addEventListener('click', () => setSelMode(false));
+
+$('selPage').addEventListener('click', () => {
+  for (const c of $('grid').querySelectorAll('.card')) SEL.ids.add(Number(c.dataset.id));
+  saveSel();
+  renderGrid(LAST);
+  paintSel();
+});
+
+$('selAll').addEventListener('click', async () => {
+  // 客户端只把当前筛选条件发过去，服务端按**同一套 _filter** 把 id 全捞回来
+  const u = new URLSearchParams({ status: S.status, q: S.q });
+  if (S.folder !== '') u.set('folder', S.folder);
+  try {
+    const r = await fetch('/api/images/ids?' + u.toString());
+    if (!r.ok) throw new Error();
+    const d = await r.json();
+    for (const id of d.ids) SEL.ids.add(id);
+    saveSel();
+    renderGrid(LAST);
+    paintSel();
+    toast(`已选中全部 ${d.total} 张`);
+  } catch {
+    toast('没选上。工具可能刚重启过，刷新一下页面试试。');
+  }
+});
+
+// ---------- 文件夹操作（都作用在左边选中的那个上） ----------
+
+$('opNew').addEventListener('click', async () => {
+  const parent = currentFolderId();
+  const name = await askText('新建文件夹',
+    parent === null ? '会放在最外层。' : `会放在「${folderName(parent)}」里面。`, '');
+  if (!name) return;
+  if (!await send('/api/folders', 'POST', { name, parent_id: parent })) return;
+  await reload();
+});
+
+$('opRename').addEventListener('click', async () => {
+  const id = currentFolderId();
+  if (id === null) return;
+  const old = folderName(id);
+  const name = await askText('给文件夹改名', '', old);
+  if (!name || name === old) return;
+  if (!await send(`/api/folders/${id}`, 'PATCH', { name })) return;
+  await reload();
+});
+
+$('opMove').addEventListener('click', async () => {
+  const id = currentFolderId();
+  if (id === null) return;
+  // 它自己和它下面的都不能当目标 —— 那样会套成一个圈，整棵树从根上断开
+  const skip = subtreeIds(id);
+  const items = [{ value: 'root', label: '（最外层）' }];
+  for (const f of TREE.items) {
+    if (!skip.has(f.id)) items.push({ value: f.id, label: f.name, depth: f.depth + 1 });
+  }
+  const cur = TREE.items.find(f => f.id === id);
+  const v = await askPick(`把「${folderName(id)}」移到哪`,
+    '它自己、以及它里面的文件夹不能当目标。', items,
+    cur && cur.parent_id !== null ? cur.parent_id : 'root');
+  if (v === null) return;
+  const parent = v === 'root' ? null : Number(v);
+  if (cur && cur.parent_id === parent) return;          // 挪到原地，什么都不用做
+  if (!await send(`/api/folders/${id}`, 'PATCH', { parent_id: parent })) return;
+  await reload();
+});
+
+$('opCopy').addEventListener('click', async () => {
+  const id = currentFolderId();
+  if (id === null) return;
+  const items = [{ value: 'root', label: '（最外层）' }];
+  for (const f of TREE.items) items.push({ value: f.id, label: f.name, depth: f.depth + 1 });
+  const v = await askPick(`把「${folderName(id)}」复制到哪`,
+    '复制出来的是文件夹结构和归档关系 —— 里面的照片不会占双份磁盘，只是「也放进新的文件夹」。',
+    items, 'root');
+  if (v === null) return;
+  const parent = v === 'root' ? null : Number(v);
+  if (!await send(`/api/folders/${id}/copy`, 'POST', { parent_id: parent })) return;
+  toast('复制好了');
+  await reload();
+});
+
+$('opDel').addEventListener('click', async () => {
+  const id = currentFolderId();
+  if (id === null) return;
+  const name = folderName(id);
+  const p = await send(`/api/folders/${id}/delete-preview`, 'GET');
+  if (!p) return;
+
+  const hint = p.folders > 1
+    ? `「${name}」下面还有 ${p.folders - 1} 个子文件夹，会一起删掉。`
+    : '';
+
+  const items = [];
+  if (p.images_in_subtree) {
+    items.push({
+      value: 'keep',
+      label: '只删文件夹，照片都留着',
+      note: p.images_only_here === 0
+        ? `这 ${p.images_in_subtree} 张都还属于别的文件夹，本来就不会被删`
+        : `这 ${p.images_in_subtree} 张会变成「未分类」`,
+    });
+    if (p.images_only_here > 0) {
+      items.push({
+        value: 'with',
+        label: `连照片一起删（删 ${p.images_only_here} 张）`,
+        note: (p.images_elsewhere
+          ? `另有 ${p.images_elsewhere} 张还属于别的文件夹，会保留。`
+          : '') + '删掉的原图会进 data/trash/，测量记录一起没，不能恢复。',
+      });
+    }
+  } else {
+    items.push({ value: 'keep', label: `删掉「${name}」—— 它里面没有照片` });
+  }
+
+  const v = await askPick(`删除「${name}」`, hint, items, 'keep');
+  if (v === null) return;
+
+  const r = await send(`/api/folders/${id}?with_photos=${v === 'with'}`, 'DELETE');
+  if (!r) return;
+  toast(r.images_deleted
+    ? `删了 ${r.folders_deleted} 个文件夹、${r.images_deleted} 张照片`
+    : `删了 ${r.folders_deleted} 个文件夹，照片都还在`);
+  await reload();
+});
+
+async function archiveImage(it) {
+  const items = TREE.items.map(f => ({ value: f.id, label: f.name, depth: f.depth }));
+  const picked = await askChecks(`「${it.name}」放进哪些文件夹`,
+    '可以同时放进好几个文件夹。一个都不勾就是「未分类」。',
+    items, new Set(it.folders));
+  if (picked === null) return;                 // 取消
+  if (!await send(`/api/images/${it.id}/folders`, 'PUT', { folder_ids: picked })) return;
+  await reload();
+}
+
+// ---------- 打标签（单张 + 批量共用一个对话框） ----------
+
+const TAG_ROWS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
+const TAG_COLS = Array.from({ length: 12 }, (_, i) => String(i + 1));
+const TAG_HOLES = ['孔1', '孔2'];   // 短标签：下拉宽度是按最长的那个选项算的
+
+function mkSelect(options, cur) {
+  const s = document.createElement('select');
+  const blank = document.createElement('option');
+  blank.value = ''; blank.textContent = '—';      // 不标
+  s.append(blank);
+  for (const o of options) {
+    const op = document.createElement('option');
+    op.value = o; op.textContent = o;
+    s.append(op);
+  }
+  s.value = cur;
+  return s;
+}
+
+// 存成 "A1-1"：行 + 列 + '-' + 第几个孔。三个下拉都选了才算一个完整标签。
+function tagOf(selA, selN, selH) {
+  if (!selA.value || !selN.value || !selH.value) return '';
+  return `${selA.value}${selN.value}-${selH.value === '孔1' ? 1 : 2}`;
+}
+
+async function tagImages(items) {
+  const wrap = document.createElement('div');
+  wrap.className = 'tagList';
+  const rows = [];
+
+  for (const it of items) {
+    const row = document.createElement('div');
+    row.className = 'tagRow';
+
+    const im = document.createElement('img');
+    im.className = 'tagThumb';
+    im.src = thumbURL(it);
+    im.alt = '';
+
+    const nm = document.createElement('span');
+    nm.className = 'tagName';
+    nm.textContent = it.name;      // textContent：名字是用户打的，别走 innerHTML
+
+    // 已有的标签拆回三个下拉。不自动编号、不猜顺序 —— 用户对着缩略图一张张选。
+    const m = /^([A-H])(\d{1,2})-([12])$/.exec((it.tags || [])[0] || '');
+    const selA = mkSelect(TAG_ROWS, m ? m[1] : '');
+    const selN = mkSelect(TAG_COLS, m ? m[2] : '');
+    const selH = mkSelect(TAG_HOLES, m ? (m[3] === '1' ? '孔1' : '孔2') : '');
+    row.append(im, nm, selA, selN, selH);
+
+    row._get = () => tagOf(selA, selN, selH);
+    rows.push(row);
+    wrap.append(row);
+  }
+
+  const collect = () => items.map((it, i) => {
+    const t = rows[i]._get();
+    return { id: it.id, tags: t ? [t] : [] };
+  });
+
+  // 两行填了同一个孔位就标红、不让提交 —— 30 行 × 3 个下拉手填很容易点错，
+  // 而 A1-1 重复就等于"这张图是哪份样品"说不清了。
+  const checkDup = list => {
+    for (const r of rows) r.classList.remove('dup');
+    const first = new Map(), bad = [];
+    for (const { id, tags } of list) {
+      const t = tags[0];
+      if (!t) continue;
+      if (first.has(t)) bad.push(t); else first.set(t, id);
+    }
+    if (!bad.length) return true;
+    for (let i = 0; i < rows.length; i++) {
+      if (list[i].tags[0] === bad[0]) rows[i].classList.add('dup');
+    }
+    toast(`有两张都填了 ${bad[0]}，改一下`);
+    return false;
+  };
+
+  const picked = await ask(
+    items.length > 1 ? `给这 ${items.length} 张打标签` : `「${items[0].name}」是哪个孔`,
+    '第一个下拉是行、第二个是列、第三个是同一个池里的第几个孔。'
+    + '三个都选才算标上；选「—」就是不标。',
+    wrap,
+    [{ label: '取消', value: null },
+     { label: '确定', pick: collect, check: checkDup }]);
+  if (picked === null) return;              // 取消
+
+  const r = await send('/api/images/batch-tags', 'POST', { items: picked });
+  if (!r) return;
+  if (SEL.on) setSelMode(false);
+  toast(`已给 ${r.updated} 张标上`);
+  await reload();
+}
+
+async function batchTag() {
+  const ids = selIds();
+  if (!ids.length) return;
+  // 跨页全选时 LAST 里没有全部的行，得按 id 去库里问一遍名字和缩略图
+  const items = LAST.filter(it => SEL.ids.has(it.id));
+  if (items.length !== ids.length) {
+    toast('先翻到有这些照片的页再打标签，不然看不到缩略图');
+    return;
+  }
+  await tagImages(items);
+}
+
+// ---------- 批量归档 / 批量删除（选择模式下的两个动作） ----------
+
+async function batchArchive() {
+  const n = SEL.ids.size;
+  if (!n) return;
+
+  const wrap = document.createElement('div');
+
+  // 单选：默认停在「也放进」—— 安全的那一边
+  const modes = document.createElement('div');
+  modes.className = 'pick';
+  const mkRadio = (value, label, note, checked) => {
+    const lab = document.createElement('label');
+    lab.className = 'pickRow';
+    const rb = document.createElement('input');
+    rb.type = 'radio';
+    rb.name = 'batchMode';
+    rb.value = value;
+    rb.checked = checked;
+    const tx = document.createElement('span');
+    tx.className = 'lab';
+    tx.textContent = label;
+    const em = document.createElement('em');
+    em.textContent = note;
+    tx.append(em);
+    lab.append(rb, tx);
+    return { lab, rb };
+  };
+  const r1 = mkRadio('add', '也放进这些文件夹', '它们原来在的文件夹都保留', true);
+  const r2 = mkRadio('replace', '换成这些文件夹', '原来的一律取消');
+  modes.append(r1.lab, r2.lab);
+
+  // 多选：文件夹列表
+  const list = document.createElement('div');
+  list.className = 'pick';
+  const boxes = [];
+  if (!TREE.items.length) {
+    const p = document.createElement('p');
+    p.className = 'pickNone';
+    p.textContent = '还一个文件夹都没有。先去左边点「新建」建一个；'
+                  + '或者选「换成」再保存，那这些照片会变成「未分类」。';
+    list.append(p);
+  }
+  for (const f of TREE.items) {
+    const lab = document.createElement('label');
+    lab.className = 'pickRow';
+    if (f.depth) lab.style.paddingLeft = (8 + f.depth * 13) + 'px';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = String(f.id);
+    boxes.push(cb);
+    const tx = document.createElement('span');
+    tx.className = 'lab';
+    tx.textContent = f.name;
+    lab.append(cb, tx);
+    list.append(lab);
+  }
+
+  wrap.append(modes, list);
+
+  const picked = await ask(`把选中的 ${n} 张放进文件夹`,
+    '默认是「也放进」—— 什么都不勾就是保持原样。', wrap, [
+      { label: '取消', value: null },
+      { label: '保存', pick: () => ({
+        folder_ids: boxes.filter(b => b.checked).map(b => Number(b.value)),
+        mode: r2.rb.checked ? 'replace' : 'add',
+      }) },
+    ]);
+  if (picked === null) return;          // 取消。注意 {folder_ids:[]} 是合法结果，不能用 falsy 判断
+
+  const r = await send('/api/images/batch-folders', 'POST',
+                       { image_ids: selIds(), ...picked });
+  if (!r) return;
+  // 「也放进」+ 一个都没勾 = 原有 ∪ ∅ = 原有，服务端确实一张都没动。
+  // 报「已归档 N 张」是谎话 —— 照实说。
+  if (picked.mode === 'add' && !picked.folder_ids.length) {
+    toast('没有勾任何文件夹，原来的归档没变');
+  } else {
+    toast(`已归档 ${r.updated} 张`);
+  }
+  setSelMode(false);
+  await reload();
+}
+
+async function batchDelete() {
+  const n = SEL.ids.size;
+  if (!n) return;
+
+  // 先问服务端要数字。跨页全选时前端手里只有当前页那 24 行的 line_count，
+  // 算不出「其中几张量过线」—— 而且 dry_run 和真删走的是同一个解析函数，
+  // 预览的数字和实际删的永远一致。
+  const pre = await send('/api/images/batch-delete', 'POST',
+                         { image_ids: selIds(), dry_run: true });
+  if (!pre) return;
+  if (!pre.count) {
+    toast('这些照片都不在了，可能刚在别处删掉了');
+    setSelMode(false);
+    await reload();
+    return;
+  }
+
+  const wrap = document.createElement('div');
+  const line = document.createElement('p');
+  line.className = 'warn';
+  line.textContent = pre.measured
+    ? `其中 ${pre.measured} 张量过线，测量记录会一起没，不能恢复。`
+    : '这批照片都还没量过线，删掉不影响任何测量记录。';
+  wrap.append(line);
+
+  const v = await ask(`删掉 ${pre.count} 张照片`,
+    '原图会挪进 data/trash/（不是真删，磁盘上还找得到）。', wrap, [
+      { label: '取消', value: null },
+      { label: `删掉这 ${pre.count} 张`, value: 'go', danger: true },
+    ]);
+  if (v !== 'go') return;
+
+  const r = await send('/api/images/batch-delete', 'POST', { image_ids: selIds() });
+  if (!r) return;
+  toast(r.moved_to_trash < r.deleted
+    ? `删了 ${r.deleted} 张（其中 ${r.deleted - r.moved_to_trash} 张的原图不在工具目录里，没动它们）`
+    : `删了 ${r.deleted} 张，原图都挪进 data/trash/ 了`);
+  setSelMode(false);
+  await reload();
+}
+
+// ---------- 批量导出图片 ----------
+
+async function exportImages() {
+  const n = SEL.ids.size;
+  if (!n) return;
+
+  // 服务端同步地写几十个 PNG，要等十几秒 —— 必须让用户看见"在动"，
+  // 而且要明确说「别刷新」：刷新了这次导出的结果就看不到了。
+  const btn = $('selExport');
+  const t0 = Date.now();
+  btn.disabled = true;
+  const tick = setInterval(() => {
+    btn.textContent = `导出中 ${Math.round((Date.now() - t0) / 1000)} 秒…`;
+  }, 250);
+
+  let r;
+  try {
+    r = await send('/api/images/export-images', 'POST', { image_ids: selIds() });
+  } finally {
+    clearInterval(tick);
+    btn.textContent = '导出图片';
+    btn.disabled = SEL.ids.size === 0;
+  }
+  if (!r) return;                       // send() 已经把服务端那句中文弹出来了
+
+  if (!r.count) {
+    // count 是**成功**张数。为 0 有两种可能：记录被别处删了，或原图文件读不出来。
+    // ⚠️ 别写成「都不在了」—— 那是替用户下结论，而这次的失败原因可能是文件损坏。
+    toast('这些照片一张都没导出来，可能刚被删掉或原图已损坏');
+    setSelMode(false);
+    await reload();
+    return;
+  }
+
+  let msg = `导出了 ${r.count} 张，在 ${r.dir}`;
+  if (r.renamed) msg += `（有 ${r.renamed} 张重名，加了 (2)）`;
+  // failed 是两种情况的合并：库里已经没有的 + 原图读不出来的（被删/损坏）。
+  // 服务端区分不了也不该假装分得清 —— 对用户来说都是"这张没导出来"。
+  if (r.failed.length) msg += `；另有 ${r.failed.length} 张没导出来，跳过了`;
+  msg += r.opened ? '，文件夹已经帮你打开了' : '，自己去这个文件夹拿';
+  toast(msg);
+  setSelMode(false);
+  await reload();
+}
+
+$('selTag').addEventListener('click', batchTag);
+$('selExport').addEventListener('click', exportImages);
+$('selArchive').addEventListener('click', batchArchive);
+$('selDelete').addEventListener('click', batchDelete);
+
+// ---------- 启动 ----------
+
+async function reload() {
+  await loadTree();     // 先树后格子：卡片上要写文件夹名字，得先有树
+  await load();
+}
+
+// 从测量页返回时（bfcache 命中）不会重新跑脚本，页码/搜索词/文件夹可能是旧的。
+// 待确认列表也要重拉：它是全局一份的，在别的标签页/手机上改过的话，
+// 屏幕上这份已经是旧的 —— 而「确认导入」的覆盖警告正是照着屏幕上的数字算的。
+window.addEventListener('pageshow', e => {
+  if (e.persisted) { readUrl(); reload(); loadPending(); }
+});
+
+readSel();          // 选择模式和已勾的 id 一起存在 localStorage —— 刷新后原样回来
+paintSel();
+readUrl();
+// 从测量页一次拖了几张过来时走这条：直接把待确认区展开
+if (new URLSearchParams(location.search).get('pending') === '1') {
+  localStorage.setItem('jltx.pendingOpen', '1');
+}
+reload();
+loadPending();
+</script>
+</body>
+</html>

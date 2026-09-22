@@ -1,0 +1,8 @@
+# .bat 必须保持 CRLF —— cmd.exe 读 LF 结尾的批处理会出问题。
+# 写死在这里，不管谁 clone、本机 git 怎么配都一样。
+*.bat text eol=crlf
+
+# 其余文本正常处理；图片等二进制不要碰
+*.png binary
+*.jpg binary
+*.pdf binary
