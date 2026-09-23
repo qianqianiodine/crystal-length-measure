@@ -285,6 +285,16 @@ def test_net_enable_opens_window(client):
     assert j["expires_in"] > 0
 
 
+def test_net_enable_opens_a_two_hour_window(client):
+    """开一次口子管 2 小时 —— 2026-09-23 用户要求（原来 30 分钟）。
+
+    钉住这个数字：改小的话用户拍着拍着口子就关了，照片传到一半失败，
+    而页面上只写「还有约 X 分钟有效」，他不会想到是时间到了。
+    """
+    j = client.post("/api/net/enable").json()
+    assert 7100 < j["expires_in"] <= 7200, j["expires_in"]
+
+
 def test_net_qrcode_is_png(client):
     r = client.get("/api/net/qrcode")
     assert r.status_code == 200

@@ -77,11 +77,16 @@ aside#tree {
 #treeList { flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; padding: 8px 0; }
 
 .tnode {
-  display: flex; align-items: center; gap: 8px; width: 100%;
+  display: flex; align-items: center; gap: 6px; width: 100%;
   font: 13px var(--ui); color: var(--text); text-align: left;
   background: none; border: 0; border-left: 2px solid transparent;
-  padding: 5px 10px 5px 12px; cursor: pointer;
+  padding: 5px 10px 5px 4px; cursor: pointer;
 }
+/* 展开/收起的小三角。⚠️ 没有子文件夹的行也占同样宽（宽度定死 16px），
+   不然同一层的名字会左右错开、看不出谁是谁的子文件夹。 */
+.tnode .tcaret { flex: 0 0 auto; width: 16px; text-align: center; cursor: pointer;
+                 color: var(--faint); font-size: 11px; line-height: 1; }
+.tnode .tcaret:hover { color: var(--ref); }
 .tnode:hover { background: var(--raise); }
 .tnode[aria-current="true"] { background: var(--raise); border-left-color: var(--ref); }
 .tnode .tname { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
@@ -150,23 +155,39 @@ main {
 }
 .card .file:hover { color: var(--ref); background: #24211a; }
 
-/* 标签对话框：一行一张图 + 三个下拉。每一行都要有缩略图 ——
+/* 标签对话框：一行一张图 + 编号框 + 三个下拉。每一行都要有缩略图 ——
    用户说了「我不一定是按照顺序拍的」，没有缩略图就是闭着眼睛填。
 
    ⚠️ 这一行的宽度要用弹窗内宽（430 - 2×18 = 394px）反着算：
-   缩略图 48 + 名字 ≤150 + 三个下拉各 ~48 + 五个 gap 各 6 = ~360px，留了余量。
-   改这里的任何一个数之前先加一遍，超了弹窗就横着滚。 */
+   缩略图 48 + 名字 ≤92 + 编号 ≤80 + 三个下拉各 48 + 五个 gap 各 6
+   = 48 + 92 + 80 + 144 + 30 = 394，正好。
+   改这里的任何一个数之前先加一遍，超了弹窗就横着滚。
+   （缩略图和三个下拉是 `flex: 0 0 auto` 不能缩，名字和编号框都能缩 ——
+    真超了也是这两个被压扁、不会撑破弹窗，但那时名字只剩几个字了。） */
 .tagList { max-height: 46vh; overflow-y: auto; }
+/* 整批编号框。**放在滚动区外面**：塞进 .tagList 的话列表一长它就跟着滚没了，
+   而它恰恰是打标签时第一件要填的东西。 */
+.tagBatch { padding: 0 2px 8px; }
+.tagBatch label { display: block; font-size: 12px; color: var(--faint); }
+.tagBatch input { display: block; margin-top: 4px; }
 .tagRow { display: flex; align-items: center; gap: 6px; padding: 5px 2px; }
 .tagRow + .tagRow { border-top: 1px solid #2a2822; }
 .tagThumb { width: 48px; height: 36px; object-fit: cover; border-radius: 3px;
             background: #1a1916; flex: 0 0 auto; }
 /* ⚠️ 别写成 flex: 1 1 auto —— 那样名字会吃掉整行剩下的空间，把三个下拉顶到
-   最右边，看着像三样互不相干的东西。封顶 150px，多出来的空位留在行尾
+   最右边，看着像三样互不相干的东西。封顶 92px，多出来的空位留在行尾
    （flex 默认就是 flex-start，不用再补 spacer）。 */
-.tagName { flex: 0 1 auto; max-width: 150px; min-width: 0; font-size: 12px;
+.tagName { flex: 0 1 auto; max-width: 92px; min-width: 0; font-size: 12px;
            color: var(--text); overflow: hidden; text-overflow: ellipsis;
            white-space: nowrap; }
+/* 行里那个编号框。⚠️ 和三个下拉一样必须带 `#dlgBody`（id）—— 上面那条
+   `#dlgBody input[type=text] { width: 100% }` 权重 101，`.tagNo` 单写只有 10，
+   整行会被这一个输入框撑爆。（和下面那条下拉踩的是同一个坑。）
+   `flex: 1 1 80px` + `min-width: 0`：有富余时占 80px，挤了先缩它。 */
+#dlgBody .tagRow input.tagNo {
+  flex: 1 1 80px; min-width: 0; max-width: 80px;
+  padding: 5px 6px; font-size: 12.5px;
+}
 /* ⚠️ 选择器必须带 `#dlgBody`（id）—— 上面那条 `#dlgBody select { width: 100% }`
    权重是 101，只写 `.tagRow select` 是 11，**id 赢**，`width: auto` 会被吃掉，
    三个下拉照样各占满整行、弹窗横着滚。（踩过：第一版就是这么白改的。）
@@ -331,11 +352,6 @@ body.pending-open #pager { display: none; }
 #pHead .sz { color: var(--faint); font-family: var(--num); font-size: 12px; }
 #pHead .grow { flex: 1 1 auto; }
 #pHead label { display: flex; align-items: center; gap: 7px; color: var(--mute); font-size: 12.5px; }
-#pHead input#pPrefix {
-  font: 12.5px var(--ui); color: var(--text); background: var(--ink);
-  border: 1px solid var(--rule); border-radius: 3px; padding: 5px 8px; width: 128px;
-}
-#pHead input#pPrefix:focus { outline: none; border-color: var(--ref); }
 #pHead button, #pFoot button, .prow .wbtns button {
   font: 12.5px var(--ui); color: var(--text); background: var(--raise);
   border: 1px solid var(--rule); border-radius: 3px; padding: 5px 11px; cursor: pointer;
@@ -343,6 +359,7 @@ body.pending-open #pager { display: none; }
 #pHead button:hover, #pFoot button:hover, .prow .wbtns button:hover { background: #34301f; }
 
 #pRows { display: flex; flex-direction: column; gap: 8px; }
+.prow .pf { display: block; width: 100%; margin-top: 6px; }
 .prow {
   display: flex; gap: 12px; align-items: flex-start;
   background: var(--panel); border: 1px solid var(--rule); border-radius: 3px;
@@ -362,19 +379,11 @@ body.pending-open #pager { display: none; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .prow .line { display: flex; align-items: center; margin-top: 5px; }
-/* 前缀是一截灰色的独立元素，不落进输入框 —— 清掉前缀时每一行自动退回自己的名字 */
-.prow .pfx {
-  background: var(--raise); color: var(--mute); border: 1px solid var(--rule);
-  border-right: 0; border-radius: 3px 0 0 3px; padding: 6px 7px;
-  font: 12.5px var(--ui); white-space: nowrap;
-}
-.prow .pfx:empty { display: none; }
 .prow input.pname {
   flex: 1 1 auto; min-width: 0; font: 13px var(--ui); color: var(--text);
-  background: var(--ink); border: 1px solid var(--rule); border-radius: 0 3px 3px 0;
+  background: var(--ink); border: 1px solid var(--rule); border-radius: 3px;
   padding: 6px 8px;
 }
-.prow .pfx:empty + input.pname { border-radius: 3px; }
 .prow input.pname:focus { outline: none; border-color: var(--ref); }
 .prow .rm {
   flex: 0 0 auto; margin-left: 7px; background: none; border: 0; cursor: pointer;
@@ -474,11 +483,9 @@ footer .pos { font: 12.5px var(--num); color: var(--mute); }
         <h2 id="pTitle"></h2>
         <span class="sz" id="pSize"></span>
         <span class="grow"></span>
-        <label>统一前缀
-          <input id="pPrefix" type="text" maxlength="60" autocomplete="off"
-                 spellcheck="false" placeholder="如 EXP0615_">
+        <label>这批放到
+          <select id="pFolder"></select>
         </label>
-        <button id="pPrefixClear" type="button" title="清掉前缀">✕</button>
         <button id="pToggle" type="button">收起</button>
       </div>
       <div id="pRows"></div>
@@ -530,6 +537,12 @@ const $ = id => document.getElementById(id);
 // 刷新、前进后退、把链接发给别人，都会回到同一屏。
 // folder 是字符串：'' = 全部照片，'0' = 未分类，其余 = 文件夹 id。
 const S = { q: '', order: 'time_desc', status: 'all', folder: '', page: 1, total: 0 };
+
+// 图库现在看的是哪个文件夹 —— 手机上那个「这批放到」默认就停在这儿，
+// 拖进来的照片也落在这儿。''（全部照片）和 '0'（未分类）都表示"没有具体文件夹"，不传。
+// ⚠️ 两处语义必须一样，所以只有这一份。
+const netFolder = () => (S.folder === '' || S.folder === '0') ? '' : S.folder;
+const netQ = () => (netFolder() ? '?folder=' + netFolder() : '');
 
 // 文件夹树（接口拿回来的原样），画树和算子树都靠它
 let TREE = { items: [], total: 0, uncategorized: 0 };
@@ -903,7 +916,8 @@ async function uploadFiles(files) {
 
   toast(`正在导入 ${list.length} 张…`);
   try {
-    const r = await fetch('/api/images/upload', { method: 'POST', body: fd });
+    // 拖进来的照片，落点就是图库现在看的那个文件夹 —— 和手机扫码那条路一致。
+    const r = await fetch('/api/images/upload' + netQ(), { method: 'POST', body: fd });
     if (!r.ok) {
       let msg = '导入没成功。工具可能刚重启过，刷新一下页面试试。';
       try {
@@ -993,11 +1007,11 @@ $('gMobile').addEventListener('click', async () => {
   try {
     const r = await fetch('/api/net/enable', { method: 'POST' });
     if (!r.ok) throw new Error();
-    const d = await (await fetch('/api/net/info')).json();
+    const d = await (await fetch('/api/net/info' + netQ())).json();
     // urls[0] 是探测出来的首选地址；下面那行地址一定要显示出来 ——
     // 扫不出来时用户还能自己照着敲，或者发到微信里点开
     addr.textContent = d.urls[0] || '没找到能用的地址';
-    img.src = '/api/net/qrcode?i=0';
+    img.src = '/api/net/qrcode' + netQ();
     // 这台电脑常带 Hyper-V / WSL / VMware / VPN 虚拟网卡，VPN 一开默认路由就指向它。
     // urls[0] 就是走默认路由的那张 —— 手机扫了连不上时，必须能换一张。
     if (d.urls.length >= 2) {
@@ -1015,11 +1029,18 @@ $('gMobile').addEventListener('click', async () => {
       });
       sel.addEventListener('change', () => {
         addr.textContent = d.urls[sel.value] || '没找到能用的地址';
-        img.src = `/api/net/qrcode?i=${sel.value}`;
+        // 上面已经带了 ?folder=，换网卡这一下要用 & 接上去
+        img.src = `/api/net/qrcode?i=${sel.value}`
+                + (netFolder() ? '&folder=' + netFolder() : '');
       });
       pick.append(sel);
     }
-    tip.textContent = `还有约 ${Math.ceil(d.expires_in / 60)} 分钟有效。`
+    // 口子现在是 2 小时，写成「还有约 119 分钟有效」读起来别扭 —— 过了一小时就说小时
+    const left = d.expires_in;
+    const span = left >= 3600
+      ? `${Math.floor(left / 3600)} 小时 ${Math.round(left % 3600 / 60)} 分钟`
+      : `${Math.ceil(left / 60)} 分钟`;
+    tip.textContent = `还有约 ${span}有效。`
                     + '手机要连同一个 WiFi（不是流量）。扫不出来，把上面那行地址发到手机里点开。';
   } catch {
     addr.textContent = '打不开手机传图';
@@ -1032,16 +1053,7 @@ $('gMobile').addEventListener('click', async () => {
 //
 // 列表整个存在服务端（pending_imports 表 + data/staging/ 里的真文件），
 // 所以刷新、关浏览器、重启工具，它都还在。必须这样：手机和电脑要看同一份。
-let P = { items: [], prefix: '', total_size: 0, ok_count: 0, failed_count: 0 };
-
-// 统一前缀：防抖 300ms + 已经发出去、还没回来的那次 PUT。
-// ⚠️ 和名字是同一个坑：确认导入之前**必须**先把用户刚打的前缀送到服务端 ——
-// 服务端是拿「前缀 + 名字」给整批照片起名的，晚一步整批就按旧前缀（甚至空前缀）
-// 入库了，而提示语只会说「导入 N 张」，用户根本看不出名字不对。
-let pPrefixTimer = null;
-let pPrefixFlight = null;   // { value, promise } —— 已经发出去、还没回来的那次
-let pPrefixKnown = null;    // 服务端确认过的前缀（它上次告诉我们的）：同一个值不重复发
-let pPrefixFlushing = false; // 正在把"还没发出去的那个前缀"冲出去：这期间别动输入框
+let P = { items: [], total_size: 0, ok_count: 0, failed_count: 0 };
 
 // 每一行**自己**一个待发保存。⚠️ 不能用模块级单个定时器：那样在 A 行打完名字、
 // 300ms 内切到 B 行打字，A 那个 setTimeout 会被 clearTimeout 掉 —— A 的名字永远
@@ -1066,7 +1078,6 @@ function setPending(d) {
   const ow = new Set((P.items || []).filter(x => x._ow).map(x => x.id));
   P = d;
   P.items = P.items || [];
-  pPrefixKnown = P.prefix;    // 服务端刚说了它的前缀是这个 → 同一个值不用再发一遍
   for (const it of P.items) it._ow = ow.has(it.id);
   paintPending();
 }
@@ -1084,19 +1095,13 @@ function paintPending() {
   const failed = P.failed_count ? `，还有 ${P.failed_count} 张没成功` : '';
   $('pTitle').textContent = `待确认导入（${P.ok_count} 张${failed}）`;
   $('pSize').textContent = `共 ${fmtSize(P.total_size)}`;
+  // 两层的下拉都靠 FOLDERS，先填它再画行 —— pRowEl 里每行那个下拉要用
+  FOLDERS = P.folders || [];
+  fillFolderSelect($('pFolder'), P.items.length ? P.items[0].folder_id : null);
   $('pBarText').innerHTML = '';
   $('pBarText').append(
     Object.assign(document.createElement('b'), { textContent: `${P.ok_count} 张照片` }),
     document.createTextNode(` · ${fmtSize(P.total_size)} 还没进图库`));
-
-  // 还有没送出去的前缀（用户在等这次请求的路上又打了字，或者正冲着呢）→
-  // 输入框里那个新值说了算，别拿刚回来的旧值把它冲掉；
-  // 它自己有定时器（或正被 flush 送出去），发出去之后服务端就是它了。
-  // ⚠️ pPrefixFlushing 这一条不能漏：flush 一上来就把定时器清了，只判定时器的话
-  // 它在 flush 期间恒为假 —— 等在飞的那次一回来就会把用户刚打的新值顶成旧值。
-  if ($('pPrefix').value !== P.prefix && !pPrefixTimer && !pPrefixFlushing) {
-    $('pPrefix').value = P.prefix;
-  }
 
   const rows = $('pRows');
   rows.innerHTML = '';
@@ -1131,9 +1136,6 @@ function pRowEl(it) {
 
   const line = document.createElement('div');
   line.className = 'line';
-  const pfx = document.createElement('span');
-  pfx.className = 'pfx';
-  pfx.textContent = it.status === 'ok' ? P.prefix : '';
 
   const inp = document.createElement('input');
   inp.className = 'pname';
@@ -1143,8 +1145,8 @@ function pRowEl(it) {
   const queued = pSaves.get(it.id);
   inp.value = queued ? queued.value : it.name;
   inp.placeholder = '留空就用原始文件名';
-  inp.maxLength = Math.max(1, 100 - P.prefix.length);   // 前缀 + 名字不能超过 100
-  line.append(pfx, inp);
+  inp.maxLength = 100;
+  line.append(inp);
 
   const rm = document.createElement('button');
   rm.className = 'rm';
@@ -1179,6 +1181,14 @@ function pRowEl(it) {
     info.append(box);
   }
 
+  // 每行自己的落点。默认跟着服务端给的值（整批那个下拉就是靠改这个字段生效的）
+  const fsel = document.createElement('select');
+  fsel.className = 'pf';
+  fsel.title = '这张放哪个文件夹';
+  fillFolderSelect(fsel, it.folder_id);
+  fsel.addEventListener('change', () => pPatchFolder(it.id, folderValue(fsel)));
+  info.append(fsel);
+
   row.append(info);
   // ⚠️ 必须等 box 进了 DOM 再画：paintWarn 要顺手把这一行的红框同步掉，而它
   // 是拿 box.closest('.prow') 找行的。挂进树之前调，那一步会被跳过 ——
@@ -1207,7 +1217,7 @@ function pDropSave(id) {
 }
 
 // 把还在等那 300ms 的保存立刻都发出去，并等服务器都收下为止。
-// 改前缀 / 移除一行 / 确认导入之前都要先跑它 —— 否则用户最后打的几个字会赶不上：
+// 移除一行 / 确认导入之前都要先跑它 —— 否则用户最后打的几个字会赶不上：
 // 重画时被服务端的旧值顶掉，或者确认请求带着旧名字把照片存进图库。
 async function pFlushNames() {
   const jobs = [...pSaves.entries()];
@@ -1216,44 +1226,6 @@ async function pFlushNames() {
     clearTimeout(s.timer);
     return pPatchName(id, s.value);
   }));
-}
-
-// 把前缀发到服务端。串行 + 同一个值不重复发：两个 PUT 并发时回来的顺序不定，
-// 服务端可能停在旧值上；而防抖定时器刚发出去的那次，flush 等它落地就够了。
-function pSendPrefix(value) {
-  const prev = pPrefixFlight;
-  const promise = (async () => {
-    if (prev) await prev.promise;
-    await pFlushNames();     // 这次请求回来会整表重画（冲突也是服务端拿名字算的）
-    const d = await send('/api/imports/prefix', 'PUT', { prefix: value });
-    if (d) setPending(d);
-    else pPrefixKnown = null;   // 没成功 → 不知道服务端现在是什么，逼下一次真的发
-    return d;
-  })();
-  pPrefixFlight = { value, promise };
-  const settled = () => {                     // 落地后把自己从 pPrefixFlight 上摘掉
-    if (pPrefixFlight && pPrefixFlight.promise === promise) pPrefixFlight = null;
-  };
-  promise.then(settled, settled);
-  return promise;
-}
-
-// 把还没发出去的前缀立刻送出去，并等服务器收下 —— 确认导入之前必须跑到这一步。
-// 返回之后服务端存的前缀就是输入框里的字。
-async function pFlushPrefix() {
-  if (pPrefixTimer) { clearTimeout(pPrefixTimer); pPrefixTimer = null; }
-  // ⚠️ 要发的字**等之前先记下来**：等在飞的那次时它的响应会回来重画，
-  // 那会儿定时器已经被清掉了，输入框会被服务端的旧值顶掉 ——
-  // 照着被顶掉的值发就等于什么都没修（发的还是旧前缀）。
-  const v = $('pPrefix').value;
-  pPrefixFlushing = true;                          // 这期间 paintPending 不许动输入框
-  try {
-    if (pPrefixFlight) await pPrefixFlight.promise; // 已经上路的先落地，别和它抢
-    if (pPrefixKnown === v) return;                // 服务端已经是这个值了 → 不补第二枪
-    await pSendPrefix(v);
-  } finally {
-    pPrefixFlushing = false;
-  }
 }
 
 function paintWarn(box, it, inp) {
@@ -1295,7 +1267,7 @@ function paintWarn(box, it, inp) {
   b1.textContent = '自动加后缀';
   b1.addEventListener('click', () => {
     // suggest 是服务端按库里的实际情况算好的，别在前端自己猜「(2)」
-    inp.value = c.suggest.slice(P.prefix.length);
+    inp.value = c.suggest;
     // 和手动打字走同一条路：先把这一行排队中的保存扔掉，再按建议名发出去。
     // 不扔的话 300ms 后那个旧值会发出去，服务端存回手打的那个名字，
     // 而屏幕上显示的是建议名、警告条也是按另一个名字画的 —— 两边自相矛盾。
@@ -1333,7 +1305,7 @@ async function pPatchName(id, name) {
   it.status = d.status;
   it.reason = d.reason;
   // 现查一次 DOM：等服务器回话的这段时间里整表可能已经重画过
-  //（改前缀、收起来再展开），手里那个旧的 box 已经不在屏幕上了
+  //（收起来再展开、别处改过名），手里那个旧的 box 已经不在屏幕上了
   const row = $('pRows').querySelector(`.prow[data-pid="${id}"]`);
   const box = row && row.querySelector('.warnbox');
   const inp = row && row.querySelector('input.pname');
@@ -1359,51 +1331,74 @@ async function pPatchName(id, name) {
   if (target && inp) paintWarn(target, it, inp);
 }
 
+// ---------- 文件夹下拉（待确认区用） ----------
+// ⚠️ 手机页（app/api/mobile.py 的 _PAGE）里有一份一模一样的 —— 两个页面是各自
+// 独立的单文件，内联 JS 没法共享。改这里记得那边也改。
+let FOLDERS = [];
+
+function fillFolderSelect(sel, value) {
+  sel.innerHTML = '';
+  const first = document.createElement('option');
+  first.value = '';
+  first.textContent = '不放进文件夹';
+  sel.append(first);
+  for (const f of FOLDERS) {
+    const o = document.createElement('option');
+    o.value = String(f.id);
+    // 缩进靠不换行空格 —— <option> 吃不了 CSS 的 padding
+    o.textContent = '\u00a0\u00a0'.repeat(f.depth) + f.name;
+    sel.append(o);
+  }
+  sel.value = value === null || value === undefined ? '' : String(value);
+}
+
+function folderValue(sel) { return sel.value ? Number(sel.value) : null; }
+
+// 只发 folder_id。**别**顺手把名字也发一遍 —— 名字那边有它自己的 300ms 防抖
+// 在路上，重复发一份旧名字会把用户正在打的字覆盖掉。
+// 回包也只认 folder_id 这一块：name/conflict 归 pPatchName 管，各修各的。
+async function pPatchFolder(id, folderId) {
+  const d = await send(`/api/imports/${id}`, 'PATCH', { folder_id: folderId });
+  if (!d) return;
+  const it = P.items.find(x => x.id === id);
+  if (it) it.folder_id = d.folder_id;
+}
+
 async function loadPending() {
   try {
     const r = await fetch('/api/imports');
     if (!r.ok) throw new Error();
     setPending(await r.json());
   } catch {
-    setPending({ items: [], prefix: '', total_size: 0, ok_count: 0, failed_count: 0 });
+    setPending({ items: [], total_size: 0, ok_count: 0, failed_count: 0 });
   }
 }
 
 $('pToggle').addEventListener('click', () => pSetOpen(false));
 $('pBarOpen').addEventListener('click', () => pSetOpen(true));
 $('pBarCancel').addEventListener('click', () => $('pCancel').click());
-$('pPrefixClear').addEventListener('click', async () => {
-  $('pPrefix').value = '';
-  await pFlushNames();      // 重画之前先把各行的名字发出去，别让它们被旧值顶掉
-  await pFlushPrefix();     // 清掉还没到点的定时器，把「空前缀」送出去（走和确认同一条路）
+// 整批设文件夹：服务端把**所有行**都改掉再返回整份列表，这里照单重画
+$('pFolder').addEventListener('change', async () => {
+  const d = await send('/api/imports/folder', 'PUT',
+                       { folder_id: folderValue($('pFolder')) });
+  if (d) { P = d; paintPending(); } else toast('没存上，再试一次');
 });
-
-$('pPrefix').addEventListener('input', () => {
-  clearTimeout(pPrefixTimer);
-  // 防抖：每敲一个字就去改全部行的冲突状态太浪费
-  pPrefixTimer = setTimeout(() => {
-    pPrefixTimer = null;                // 到点了：待发的没了，发出去的这次记在 pPrefixFlight 上
-    pSendPrefix($('pPrefix').value);    // 发的是这一刻输入框里的字，不是排队那会儿的
-  }, 300);
-});
-
 $('pConfirm').addEventListener('click', async () => {
   const btn = $('pConfirm');
   if (btn.disabled) return;                 // 正在导入中，再点也没用
-  // 点下去立刻锁住按钮、换一句看得懂的文案：下面要冲名字、冲前缀、再拉一次列表，
+  // 点下去立刻锁住按钮、换一句看得懂的文案：下面要冲名字、再拉一次列表，
   // 好几个来回。不吭声的话用户以为没反应，会再点一下 —— 而服务端那两次确认
   // 是真的并行跑，同一批照片就入库两遍了。
   btn.disabled = true;
   btn.textContent = '正在导入…';
   try {
-    // 先把 300ms 内刚打的字和前缀发出去：确认要带着它们，下面的条数也要按新名字算
+    // 先把 300ms 内刚打的字发出去：确认要带着它们，下面的条数也要按新名字算
     await pFlushNames();
-    await pFlushPrefix();     // 前缀晚一步 → 整批照片按旧前缀入库，用户完全看不出来
     // ⚠️ 列表是**全局一份、电脑和手机共用**：手机刚改过名或点过确认的话，屏幕上
-    // 这些行和它们的 conflict 已经是旧的了，而服务端是按**当下**的「前缀+名字」
+    // 这些行和它们的 conflict 已经是旧的了，而服务端是按**当下**的名字
     // 重算再删的 —— 拿旧数字弹出来的警告，可能对不上真正会被删的那张。
     await loadPending();      // _ow 标记由 setPending 按 id 保留，用户勾的不丢
-    // 覆盖是拿「前缀+名字」去图库里查的，两行同名时指向的是**同一张**照片。
+    // 覆盖是拿名字去图库里查的，两行同名时指向的是**同一张**照片。
     // 服务端只会删它一次（第二行自动加后缀），所以这里按照片去重 ——
     // 不然弹窗会说"删 2 张"、线数还加两遍。用户正是照着这个数字决定要不要覆盖的，
     // 而这是唯一会永久毁数据的操作。
@@ -1464,12 +1459,9 @@ $('pCancel').addEventListener('click', async () => {
   // 用户以为取消没成功。
   for (const s of pSaves.values()) clearTimeout(s.timer);
   pSaves.clear();
-  // 前缀同理：取消会把服务端的前缀清空，晚到的那次 PUT 会把它又设回去
-  clearTimeout(pPrefixTimer);
-  pPrefixTimer = null;
   const d = await send('/api/imports', 'DELETE');
   if (!d) return;
-  setPending({ items: [], prefix: '', total_size: 0, ok_count: 0, failed_count: 0 });
+  setPending({ items: [], total_size: 0, ok_count: 0, failed_count: 0 });
   toast(`已取消 ${d.cleared} 张`);
 });
 
@@ -1507,23 +1499,80 @@ function updateOps() {
       : '新建的文件夹会放在最外层。';
 }
 
+// ---------- 文件夹树的展开 / 收起（2026-09-23 用户要求） ----------
+//
+// 收起的是**整棵子树**：一个文件夹收起来，它下面所有层级的行都不画。
+//
+// ⚠️ 展开一个文件夹 = 只展开**下一级**：把它自己打开，同时把它下面**更深**的
+// 层级全部标成收起。用户原话是「点一个只展开当前下一级的文件夹，不是所有子文件夹」。
+// 只把下面那些「收起」标记**清掉**是不够的：以前在里面展开过的那几层会跟着
+// 一起冒出来，看着还是一次把整棵树摊开。A 里套 B、B 里套 C 时，点 A 只该看到 B，
+// 要看到 C 得再点 B。
+//
+// 存的是**收起来的**那些（不是展开的）：默认一个都没收 = 和以前一样整棵平铺，
+// 不会一上来就把用户看惯的列表变样。⭐ 刷新要保持现状，所以存 localStorage。
+let FOLD_SHUT = new Set();
+const FOLD_KEY = 'jltx.foldShut';
+try {
+  const v = JSON.parse(localStorage.getItem(FOLD_KEY) || '[]');
+  if (Array.isArray(v)) FOLD_SHUT = new Set(v);
+} catch { /* 存的东西坏了 → 当没存过，全展开 */ }
+
+// 一趟扫出所有被「收起来的祖先」盖住的行。
+// TREE.items 是深度优先的：一行的 depth 只要还大于最近一个收起行的 depth，
+// 它就在那棵子树里；depth 掉回来就说明那棵子树走完了。
+function hiddenIds() {
+  const hidden = new Set();
+  let shutAt = -1;
+  for (const f of TREE.items) {
+    if (shutAt >= 0 && f.depth > shutAt) { hidden.add(f.id); continue; }
+    shutAt = FOLD_SHUT.has(f.id) ? f.depth : -1;
+  }
+  return hidden;
+}
+
+function toggleFold(f) {
+  if (FOLD_SHUT.has(f.id)) {
+    for (const id of subtreeIds(f.id)) {
+      if (id !== f.id) FOLD_SHUT.add(id);        // 更深的一律收起 —— 只展开下一级
+    }
+    FOLD_SHUT.delete(f.id);
+  } else {
+    FOLD_SHUT.add(f.id);
+  }
+  try { localStorage.setItem(FOLD_KEY, JSON.stringify([...FOLD_SHUT])); } catch {}
+  paintTree();
+}
+
 function paintTree() {
   const list = $('treeList');
   list.innerHTML = '';
 
-  const row = (value, label, count, depth, special) => {
+  // 第 6 个参数 node：有这个文件夹才画三角（没有子文件夹的行给 null）
+  const row = (value, label, count, depth, special, node) => {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'tnode' + (special ? ' special' : '');
-    b.style.paddingLeft = (12 + depth * 13) + 'px';
+    b.style.paddingLeft = (4 + depth * 13) + 'px';
     if (value === S.folder) b.setAttribute('aria-current', 'true');
+    const tri = document.createElement('span');
+    tri.className = 'tcaret';
+    if (node) {
+      const shut = FOLD_SHUT.has(node.id);
+      tri.textContent = shut ? '▸' : '▾';
+      tri.title = shut ? '展开下一级' : '收起这一级';
+      tri.addEventListener('click', ev => {
+        ev.stopPropagation();       // 点三角只收展开开，别顺手把这一行选成当前文件夹
+        toggleFold(node);
+      });
+    }
     const n = document.createElement('span');
     n.className = 'tname';
     n.textContent = label;
     const c = document.createElement('span');
     c.className = 'tcount';
     c.textContent = count ? String(count) : '';
-    b.append(n, c);
+    b.append(tri, n, c);
     b.addEventListener('click', () => {
       if (S.folder === value) return;
       S.folder = value;
@@ -1541,7 +1590,14 @@ function paintTree() {
     sep.className = 'treeSep';
     list.append(sep);
   }
-  for (const f of TREE.items) row(String(f.id), f.name, f.count, f.depth, false);
+  const hidden = hiddenIds();
+  for (let i = 0; i < TREE.items.length; i++) {
+    const f = TREE.items[i];
+    if (hidden.has(f.id)) continue;
+    // 深度优先的列表里，下一个 depth 更大 = 它下面还有东西（O(1)，不用 indexOf）
+    const kid = i + 1 < TREE.items.length && TREE.items[i + 1].depth > f.depth;
+    row(String(f.id), f.name, f.count, f.depth, false, kid ? f : null);
+  }
   updateOps();
 }
 
@@ -1880,10 +1936,45 @@ function tagOf(selA, selN, selH) {
   return `${selA.value}${selN.value}-${selH.value === '孔1' ? 1 : 2}`;
 }
 
+// 「编号」+ 孔位 = 照片名字：编号 20260923-29 + 孔位 B5 孔1 → 20260923-29-B-5-1。
+// 孔位写成「行-列-孔」（B-5-1）：前半截和用户手打的老名字是同一个形状 ——
+// 他给的例子就是 20260923-29-B-5，还特意交代了中间用同样的半角 '-'。
+// 结尾那个孔号是他后加的（2026-09-23）：不写的话同一个池的两个孔会拼出
+// 一模一样的名字，在列表里根本分不出谁是谁。
+// 三个下拉没选全时名字就只剩编号本身：用户填了编号就照他填的来，
+// 不能一声不吭地丢掉（那他会以为名字改好了）。
+function nameWithPlate(no, tag) {
+  const m = /^([A-H])(\d{1,2})-([12])$/.exec(tag || '');
+  return m ? `${no}-${m[1]}-${m[2]}-${m[3]}` : no;
+}
+
 async function tagImages(items) {
   const wrap = document.createElement('div');
-  wrap.className = 'tagList';
+  const list = document.createElement('div');
+  list.className = 'tagList';
   const rows = [];
+
+  // 整批编号框：一块板上的照片都是同一个编号，打一次就行。
+  // 下面每行也各有一个 —— 单张想改成别的，直接改那一行。
+  // ⚠️ 上面这个一改是**覆盖所有行**（和「整批文件夹」同一个规矩，
+  //    好处是用户看得见每一行都跟着动，不会误以为只改了第一行）。
+  //    所以真想单独改的行，要放在最后改。
+  const bb = document.createElement('div');
+  bb.className = 'tagBatch';
+  const bl = document.createElement('label');
+  bl.textContent = '编号';
+  const bno = document.createElement('input');
+  bno.type = 'text';
+  bno.placeholder = '这块板的编号，如 20260923-29';
+  bno.maxLength = 60;          // 再拼上「-行-列-孔」也离服务端那 100 字上限很远
+  bno.autocomplete = 'off';
+  bno.spellcheck = false;
+  bno.addEventListener('input', () => {
+    for (const r of rows) r._no.value = bno.value;
+  });
+  bl.append(bno);
+  bb.append(bl);
+  wrap.append(bb, list);
 
   for (const it of items) {
     const row = document.createElement('div');
@@ -1898,21 +1989,34 @@ async function tagImages(items) {
     nm.className = 'tagName';
     nm.textContent = it.name;      // textContent：名字是用户打的，别走 innerHTML
 
+    // 晶体板编号。留空 = 这张不改名字（还是老样子，只写标签）。
+    const no = document.createElement('input');
+    no.type = 'text';
+    no.className = 'tagNo';
+    no.placeholder = '编号';
+    no.title = '晶体板编号 —— 填了这张就改名成「编号-行-列-孔」';
+    no.maxLength = 60;
+    no.autocomplete = 'off';
+    no.spellcheck = false;
+
     // 已有的标签拆回三个下拉。不自动编号、不猜顺序 —— 用户对着缩略图一张张选。
     const m = /^([A-H])(\d{1,2})-([12])$/.exec((it.tags || [])[0] || '');
     const selA = mkSelect(TAG_ROWS, m ? m[1] : '');
     const selN = mkSelect(TAG_COLS, m ? m[2] : '');
     const selH = mkSelect(TAG_HOLES, m ? (m[3] === '1' ? '孔1' : '孔2') : '');
-    row.append(im, nm, selA, selN, selH);
+    row.append(im, nm, no, selA, selN, selH);
 
     row._get = () => tagOf(selA, selN, selH);
+    row._no = no;
     rows.push(row);
-    wrap.append(row);
+    list.append(row);
   }
 
   const collect = () => items.map((it, i) => {
     const t = rows[i]._get();
-    return { id: it.id, tags: t ? [t] : [] };
+    const no = rows[i]._no.value.trim();
+    // 编号留空就发空串，服务端一个字都不改
+    return { id: it.id, tags: t ? [t] : [], name: no ? nameWithPlate(no, t) : '' };
   });
 
   // 两行填了同一个孔位就标红、不让提交 —— 30 行 × 3 个下拉手填很容易点错，
@@ -1936,7 +2040,9 @@ async function tagImages(items) {
   const picked = await ask(
     items.length > 1 ? `给这 ${items.length} 张打标签` : `「${items[0].name}」是哪个孔`,
     '第一个下拉是行、第二个是列、第三个是同一个池里的第几个孔。'
-    + '三个都选才算标上；选「—」就是不标。',
+    + '三个都选才算标上；选「—」就是不标。'
+    + '「编号」填了这张就改名成「编号-行-列-孔」（像 20260923-29-B-5-1），留空就不动名字；'
+    + '上面那个框一改，下面每行都跟着变。',
     wrap,
     [{ label: '取消', value: null },
      { label: '确定', pick: collect, check: checkDup }]);

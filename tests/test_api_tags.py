@@ -120,3 +120,60 @@ def test_打标签_一个坏标签整批不写(client):
 
 def test_打标签_空列表报_400(client):
     assert client.post("/api/images/batch-tags", json={"items": []}).status_code == 400
+
+
+# ---------------- 顺手改名（打标签对话框里的「编号」） ----------------
+#
+# 用户在对话框里填「编号」，前端拼成「编号-行-列-孔」当名字一起发过来。
+# 不给 30 行开 30 次 PATCH —— 单张那个入口和批量共用这一个端点，
+# 名字就跟着 tags 一起走。
+
+def _names(client) -> dict:
+    return {it["id"]: it["name"] for it in client.get("/api/images").json()["items"]}
+
+
+def test_打标签时能顺手把名字一起改(client):
+    iid = _one(client)
+    r = client.post("/api/images/batch-tags", json={"items": [
+        {"id": iid, "tags": ["B5-1"], "name": "20260923-29-B-5-1"}]})
+    assert r.status_code == 200 and r.json()["updated"] == 1
+    it = client.get("/api/images").json()["items"][0]
+    assert it["name"] == "20260923-29-B-5-1" and it["tags"] == ["B5-1"]
+
+
+def test_不带名字就只改标签(client):
+    """「编号」留空时前端根本不发这个字段 —— 老行为一个字都不能变。"""
+    iid = _one(client)
+    before = _names(client)[iid]
+    client.post("/api/images/batch-tags", json={"items": [{"id": iid, "tags": ["B5-1"]}]})
+    assert _names(client)[iid] == before
+
+
+def test_一个名字不合法整批都不改(client):
+    """和标签同一个规矩：先验**全部**，再写。
+
+    名字超长的那行排在后面时，前面那张的名字不能已经被改掉了 ——
+    否则用户看到 400 以为整批没生效，其实前几张已经悄悄变样。
+    """
+    i1, i2 = _one(client), _one(client)
+    before = _names(client)
+    r = client.post("/api/images/batch-tags", json={"items": [
+        {"id": i1, "tags": ["B5-1"], "name": "正常名字"},
+        {"id": i2, "tags": ["B5-2"], "name": "x" * 101},
+    ]})
+    assert r.status_code == 400
+    assert _names(client) == before
+
+
+def test_改的名字撞了旧的就加后缀(client):
+    """和单张改名（`PATCH /api/images/{id}`）同一个规矩：撞名加 " (2)"。
+
+    两块板拍到同一个孔位时名字会一模一样，下拉框里就分不清谁是谁了 ——
+    和导入那条路（`_ingest` 也走 `_unique_name`）保持一致。
+    """
+    i1, i2 = _one(client), _one(client)
+    client.post("/api/images/batch-tags", json={"items": [
+        {"id": i1, "tags": ["B5-1"], "name": "同一个"}]})
+    client.post("/api/images/batch-tags", json={"items": [
+        {"id": i2, "tags": ["B5-1"], "name": "同一个"}]})
+    assert sorted(_names(client).values()) == ["同一个", "同一个 (2)"]

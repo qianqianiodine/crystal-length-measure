@@ -1,8 +1,26 @@
 # ---- 用户数据：绝不入仓库 ----
-# 照片、数据库、手机令牌都在这里，是使用者的实验数据
 data/
 *.db
 *.db-journal
+# 图库批量导出的落点。和 data/ 一样是**用户产物**不是源码。
+# ⚠️ 这条得早加：EXPORT_DIR 一进 config.ensure_dirs()，**跑全量测试也会建出这个真目录**
+#    （tests/ 下好几个 fixture 都调 ensure_dirs()，且不 monkeypatch EXPORT_DIR）。
+导出/
+
+# ---- 给同事的免安装包 ----
+# 里面装着自带的 Python 运行时（几十 MB）和同事自己的照片，
+# 是**打包产物**不是源码 —— 由脚本从 app/ 和 web/ 现生成，不进版本库。
+# 注意：data/ 那条管不到它，因为这里是 发布版/data/，得单独写。
+发布版/
+# 打好的 zip 同理 —— 200 MB 内容压成 75 MB，是产物，重新打一次就有
+# ⚠️ 用 `晶体测量工具_*.zip` 而不是写死名字：这个包会改名（给同事那版叫
+#    `..._test_2026-09-22.zip`），写死了就漏网，75 MB 的二进制会跟进仓库。
+晶体测量工具_*.zip
+
+# ---- 分析/调试临时产物 ----
+_ana_*.png
+_analysis_*.png
+_ana/
 
 # ---- Python ----
 __pycache__/
@@ -25,7 +43,5 @@ desktop.ini
 *.log
 logs/
 
-# ---- 分析/调试临时产物 ----
-_ana_*.png
-_analysis_*.png
-_ana/
+# subagent-driven-development 的临时简报/审查包（scratch）
+.superpowers/

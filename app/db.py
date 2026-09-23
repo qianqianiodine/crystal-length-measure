@@ -79,7 +79,9 @@ CREATE TABLE IF NOT EXISTS image_folders (
 
 -- 待确认导入的暂存条目。**没有批次 id** —— 手机端一个请求传一张，
 -- 服务端看不出"这 5 张是同一批"，所以全库共用一份列表。
--- name 存的是**不含前缀**的那半截；前缀在 pending_state 里，读的时候拼。
+-- name 就是**确认导入时要用**的名字（以前这里存不含前缀的半截，前缀另有一张
+-- pending_state 表 —— 2026-09-23 用户要求去掉统一前缀，那张表也一起删了。
+-- 要批量为一批照片起名，用图库打标签对话框里的「编号」：编号 + 孔位 = 名字）。
 -- status='failed' 的行要在列表里占一行（需求 §3.1.2 要红字标出文件名和原因），
 -- 它有**两类**，区别全在 staged_path 上：
 --   ① 从没读出来的（"这不是图片"）—— staged_path 为空，改名字也进不了库；
@@ -87,6 +89,12 @@ CREATE TABLE IF NOT EXISTS image_folders (
 --      用户改完名字再点「确认导入」就能重试。
 -- ⚠️ 别把 ② 当 ① 清掉：清了等于让用户重传照片（见 tests 里
 -- test_a_staged_row_that_failed_on_its_name_survives_a_second_click）。
+-- folder_id：这一行确认导入时要放进哪个文件夹。NULL = 不放进文件夹（未分类）。
+--   默认值由上传请求带进来（手机扫码的 URL 里带着图库当时在看的文件夹），
+--   存在**行上**而不是全局 —— 否则「传了 3 张放 A、又传 2 张放 B」会把前面的
+--   也一起改掉（见 set_all_pending_folders）。
+-- tags：确认导入时要写进 images.tags 的标签（JSON 数组字符串）。手机上传时
+--   名字长得像孔位（A1-1）才会有值，否则是空数组。
 CREATE TABLE IF NOT EXISTS pending_imports (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     name              TEXT    NOT NULL,
@@ -96,16 +104,10 @@ CREATE TABLE IF NOT EXISTS pending_imports (
     status            TEXT    NOT NULL DEFAULT 'ok',
     reason            TEXT    NOT NULL DEFAULT '',
     import_source     TEXT    NOT NULL DEFAULT 'unknown',
+    folder_id         INTEGER,
+    tags              TEXT    NOT NULL DEFAULT '[]',
     created_time      INTEGER NOT NULL
 );
-
--- 单行表（id 恒为 1）。前缀存服务端而不是浏览器：手机和电脑看的是同一份
--- 列表，前缀放本地存储的话两边各记一个，确认出来的名字会不一样。
-CREATE TABLE IF NOT EXISTS pending_state (
-    id     INTEGER PRIMARY KEY CHECK (id = 1),
-    prefix TEXT    NOT NULL DEFAULT ''
-);
-INSERT OR IGNORE INTO pending_state (id, prefix) VALUES (1, '');
 
 CREATE INDEX IF NOT EXISTS idx_meas_image ON measurements(image_id, seq);
 CREATE INDEX IF NOT EXISTS idx_img_time   ON images(import_time DESC);
@@ -150,6 +152,8 @@ MIGRATIONS = [
     ("calibrations", "scale_bar", "TEXT"),
     ("images", "enhance", "TEXT"),
     ("images", "crop", "TEXT"),
+    ("pending_imports", "folder_id", "INTEGER"),
+    ("pending_imports", "tags",      "TEXT NOT NULL DEFAULT '[]'"),
 ]
 
 
@@ -172,11 +176,12 @@ def init_db(conn: sqlite3.Connection) -> None:
 # ---------- images ----------
 
 def create_image(conn, name: str, original_filename: str, path: str,
-                 import_source: str, transform: str | None = None) -> int:
+                 import_source: str, transform: str | None = None,
+                 tags: str = "[]") -> int:
     cur = conn.execute(
         "INSERT INTO images (name, original_filename, path, import_time, "
         "import_source, tags, favorite, transform) VALUES (?,?,?,?,?,?,0,?)",
-        (name, original_filename, path, int(time.time()), import_source, "[]", transform),
+        (name, original_filename, path, int(time.time()), import_source, tags, transform),
     )
     conn.commit()
     return int(cur.lastrowid)
@@ -197,11 +202,15 @@ ORDERS = {
 }
 
 
-def _filter(status: str, q: str, folder: int | None = None) -> tuple[str, list]:
+def _filter(conn, status: str, q: str, folder: int | None = None) -> tuple[str, list]:
     """画廊的筛选条件。status 只认 measured / unmeasured，别的一律当「全部」。
 
-    folder：None = 不限，0 = 未分类（哪个文件夹都不属于），其余 = 那个文件夹
-    （只看**直接**放进去的，不含子文件夹里的 —— 和左边树上标的数字保持一致）。
+    folder：None = 不限，0 = 未分类（哪个文件夹都不属于），
+    其余 = 那个文件夹**连同它下面所有子文件夹**里的照片。
+
+    ⚠️ 是子树，不是"只看直接放进去的"（2026-09-23 用户要求改的）。
+    改成子树之后，「选中全部 N 张」的作用面跟着变大 —— 点一个父文件夹再全选，
+    选中的是整棵子树的照片。这是想要的，但删/移动之前要看清弹窗里的数字。
     """
     conds: list[str] = []
     params: list = []
@@ -221,9 +230,19 @@ def _filter(status: str, q: str, folder: int | None = None) -> tuple[str, list]:
         if folder == 0:
             conds.append("NOT EXISTS (SELECT 1 FROM image_folders f WHERE f.image_id=images.id)")
         else:
-            conds.append("EXISTS (SELECT 1 FROM image_folders f"
-                         " WHERE f.image_id=images.id AND f.folder_id=?)")
-            params.append(folder)
+            subs = subtree_ids(conn, folder)
+            marks = ",".join("?" * len(subs))
+            # ⚠️ 必须写成 `images.id IN (子查询)`，**不能**写成
+            # `EXISTS (SELECT 1 FROM image_folders f WHERE f.image_id=images.id
+            #          AND f.folder_id IN (...))`。
+            # 后者在 SQLite 3.51.0 上会**按子查询的匹配行数吐重复的外层行**：
+            # 一张照片同时在父和子文件夹里（多对多是设计好的）时，图库里会出现
+            # 两张一模一样的卡片。`IN (1)` 单元素不出问题、`IN (1,2)` 就出，
+            # 跑一次 ANALYZE 又正常 —— 是查询计划器选错计划的坑，别去赌它。
+            # 记在 .claude/memory/learnings.md 里了。
+            conds.append(f"images.id IN (SELECT f.image_id FROM image_folders f"
+                         f" WHERE f.folder_id IN ({marks}))")
+            params.extend(subs)
 
     return ("WHERE " + " AND ".join(conds) if conds else ""), params
 
@@ -231,7 +250,7 @@ def _filter(status: str, q: str, folder: int | None = None) -> tuple[str, list]:
 def list_images(conn, limit: int = 24, offset: int = 0, *,
                 order: str = "time_desc", status: str = "all",
                 q: str = "", folder: int | None = None) -> list[sqlite3.Row]:
-    where, params = _filter(status, q, folder)
+    where, params = _filter(conn, status, q, folder)
     return conn.execute(
         f"SELECT * FROM images {where} "
         f"ORDER BY {ORDERS.get(order, ORDERS['time_desc'])} LIMIT ? OFFSET ?",
@@ -241,7 +260,7 @@ def list_images(conn, limit: int = 24, offset: int = 0, *,
 
 def count_images(conn, *, status: str = "all", q: str = "",
                  folder: int | None = None) -> int:
-    where, params = _filter(status, q, folder)
+    where, params = _filter(conn, status, q, folder)
     return int(conn.execute(
         f"SELECT COUNT(*) c FROM images {where}", params
     ).fetchone()["c"])
@@ -257,7 +276,7 @@ def ids_matching(conn, *, status: str = "all", q: str = "",
     不带 LIMIT 是故意的：这个接口的语义就是"我全要"，
     悄悄截断会让用户以为全选了、其实漏了一批。
     """
-    where, params = _filter(status, q, folder)
+    where, params = _filter(conn, status, q, folder)
     return [int(r["id"]) for r in
             conn.execute(f"SELECT id FROM images {where} ORDER BY id", params)]
 
@@ -523,9 +542,22 @@ def _copy_children(conn, src_id: int, dst_id: int) -> None:
 
 
 def folder_counts(conn) -> dict[int, int]:
-    """每个文件夹**直接**装了几张照片（不含子文件夹的）。"""
-    return {r["folder_id"]: int(r["c"]) for r in conn.execute(
-        "SELECT folder_id, COUNT(*) c FROM image_folders GROUP BY folder_id")}
+    """每个文件夹**连同它下面所有子文件夹**一共装了几张照片。
+
+    ⚠️ `COUNT(DISTINCT image_id)` 不是可选的：一张照片可以同时被放进父和子
+    （多对多是设计好的），不去重就会把一个孔算两遍，树上写 6 张、点进去 3 张。
+
+    ⚠️ 这是 N 次 subtree_ids + N 次 COUNT（N = 文件夹数，几十个）。
+    SQLite 本地跑，够快；真慢了再说 —— 别提前上记忆化。
+    """
+    out: dict[int, int] = {}
+    for row in conn.execute("SELECT id FROM folders"):
+        subs = subtree_ids(conn, row["id"])
+        marks = ",".join("?" * len(subs))
+        out[int(row["id"])] = int(conn.execute(
+            f"SELECT COUNT(DISTINCT image_id) c FROM image_folders"
+            f" WHERE folder_id IN ({marks})", subs).fetchone()["c"])
+    return out
 
 
 def uncategorized_count(conn) -> int:
@@ -585,19 +617,21 @@ def folder_delete_plan(conn, folder_id: int) -> dict:
 #
 # 设计定案（2026-09-20）见 docs/superpowers/specs/2026-09-20-待确认导入列表-design.md：
 # - 全局一份列表，没有批次概念
-# - name 只存 base（不含前缀），前缀在 pending_state 里，读的时候拼接
+# - name 就是确认导入时要用的名字（统一前缀 2026-09-23 去掉了）
 # - 失败的行在列表里占一行，但**不一定**没有 staged_path：暂存成功、只是上一次
 #   没进库的行（名字超长、写库失败）暂存文件还在，改完名字点确认就能重试。
 #   把这类行连文件一起清掉 = 用户得重新传照片。
 
 def add_pending(conn, name: str, original_filename: str, size: int,
                 staged_path: str | None, status: str, reason: str,
-                import_source: str) -> int:
+                import_source: str, folder_id: int | None = None,
+                tags: str = "[]") -> int:
     cur = conn.execute(
         "INSERT INTO pending_imports (name, original_filename, size, staged_path,"
-        " status, reason, import_source, created_time) VALUES (?,?,?,?,?,?,?,?)",
+        " status, reason, import_source, folder_id, tags, created_time)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?)",
         (name, original_filename, size, staged_path, status, reason,
-         import_source, int(time.time())),
+         import_source, folder_id, tags, int(time.time())),
     )
     conn.commit()
     return int(cur.lastrowid)
@@ -613,7 +647,7 @@ def list_pending(conn) -> list[sqlite3.Row]:
 
 
 def set_pending_name(conn, pid: int, name: str) -> None:
-    """改这一行的名字（不含前缀的那半截）。
+    """改这一行的名字。
 
     顺手把上一次失败留下的红字清掉：用户改名字正是为了让它能进库，
     而"名字不能超过 100 个字"挂在那里已经跟现状无关了。
@@ -624,6 +658,27 @@ def set_pending_name(conn, pid: int, name: str) -> None:
     conn.execute("UPDATE pending_imports SET name=? WHERE id=?", (name, pid))
     conn.execute("UPDATE pending_imports SET status='ok', reason='' "
                  "WHERE id=? AND staged_path IS NOT NULL", (pid,))
+    conn.commit()
+
+
+def set_pending_folder(conn, pid: int, folder_id: int | None) -> None:
+    conn.execute("UPDATE pending_imports SET folder_id=? WHERE id=?", (folder_id, pid))
+    conn.commit()
+
+
+def set_all_pending_folders(conn, folder_id: int | None) -> None:
+    """把当前待确认列表**所有行**设成同一个文件夹（手机/电脑上那个「这批放到」）。
+
+    ⚠️ 刻意做成一次改全部：它是"这一批放哪儿"，不是每行的独立状态。
+    要单独改某一行走 set_pending_folder —— 否则「传了 3 张放 A、又传 2 张放 B」
+    时改一下 B 会把前面 3 张也带走。
+    """
+    conn.execute("UPDATE pending_imports SET folder_id=?", (folder_id,))
+    conn.commit()
+
+
+def set_pending_tags(conn, pid: int, tags: str) -> None:
+    conn.execute("UPDATE pending_imports SET tags=? WHERE id=?", (tags, pid))
     conn.commit()
 
 
@@ -644,14 +699,3 @@ def clear_pending(conn) -> int:
     conn.execute("DELETE FROM pending_imports")
     conn.commit()
     return n
-
-
-def get_prefix(conn) -> str:
-    row = conn.execute("SELECT prefix FROM pending_state WHERE id=1").fetchone()
-    return row["prefix"] if row else ""
-
-
-def set_prefix(conn, prefix: str) -> None:
-    conn.execute("INSERT INTO pending_state (id, prefix) VALUES (1, ?) "
-                 "ON CONFLICT(id) DO UPDATE SET prefix=excluded.prefix", (prefix,))
-    conn.commit()

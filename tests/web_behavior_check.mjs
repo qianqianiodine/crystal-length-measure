@@ -75,7 +75,31 @@ class El {
   }
   get textContent() { return this._own + this.childNodes.map(n => n.textContent).join(''); }
   set textContent(v) { this._own = String(v); this.childNodes = []; }
-  set innerHTML(v) { this._own = ''; this.childNodes = []; this._html = String(v); }
+  set innerHTML(v) {
+    const s = String(v);
+    this._own = ''; this._html = s; this.childNodes = [];
+    // 真 DOM 会把这些 markup 变成节点；这里只认**整串**正好是一串不带嵌套、
+    // 不带自闭合的 <tag attr="v">文字</tag>（手机页那行「上传中」的 li 就是）。
+    // 别的一律不解析 —— 和加这个之前一样，querySelector 找不到里面任何东西。
+    const re = /<([a-zA-Z][\w-]*)((?:\s+[\w-]+="[^"]*")*)\s*>([^<]*)<\/\1>/g;
+    const got = [];
+    let m, end = 0;
+    while ((m = re.exec(s))) {
+      if (m.index !== end) return;
+      end = m.index + m[0].length;
+      got.push(m);
+    }
+    if (end !== s.length) return;
+    for (const g of got) {
+      const el = new El(g[1], this.ownerDocument);
+      for (const a of g[2].matchAll(/([\w-]+)="([^"]*)"/g)) {
+        if (a[1] === 'class') el.className = a[2];
+        else el.setAttribute(a[1], a[2]);
+      }
+      el.textContent = g[3];
+      this.append(el);
+    }
+  }
   get innerHTML() { return this._html || ''; }
   get firstChild() {
     if (!this.childNodes.length) { const t = new Txt(''); t.parentNode = this; this.childNodes.push(t); }
@@ -142,9 +166,9 @@ function match(el, sel) {
 
 /* ---------------- 把页面跑起来 ---------------- */
 
-function makePage(htmlFile, pathname) {
+function makePage(htmlFile, pathname, search = '') {
   const calls = [];                       // 按顺序记下每次请求：{ url, method, body }
-  const state = { pending: { items: [], prefix: '', total_size: 0, ok_count: 0, failed_count: 0 }, reply: null };
+  const state = { pending: { items: [], total_size: 0, ok_count: 0, failed_count: 0 }, reply: null };
 
   const mkRes = r => ({ ok: r.ok !== false, status: r.status || 200, json: async () => r.body });
 
@@ -171,7 +195,7 @@ function makePage(htmlFile, pathname) {
     dispatch(t, ev) { return (listeners[t] || []).map(fn => fn(ev || { type: t })); },
     location: null,
   };
-  const location = { pathname, search: '', href: '' };
+  const location = { pathname, search, href: '' };
   win.location = location;
   const sandbox = {
     console, setTimeout, clearTimeout, setInterval, clearInterval,
@@ -196,7 +220,7 @@ function makePage(htmlFile, pathname) {
       if (url === '/api/imports' || /\/imports$/.test(url)) {
         return mkRes({ body: state.pending });
       }
-      if (url.startsWith('/api/folders')) return mkRes({ body: { items: [], prefix: '' } });
+      if (url.startsWith('/api/folders')) return mkRes({ body: { items: [] } });
       if (url.startsWith('/api/images')) return mkRes({ body: { total: 0, items: [] } });
       return mkRes({ body: {} });
     },
@@ -224,18 +248,21 @@ function galleryPage() {
   const page = makePage(join(ROOT, 'web', 'gallery.html'), '/gallery');
   const toasts = [];
   run(page, 'globalThis.__g = { pRowEl, pPatchName, pQueueName, pSaveMap: pSaves, pDropSave,'
+    + ' fillFolderSelect,'
     + ' setP: d => { P = d; }, loadPending, paintPending, setPending, pFlushNames,'
     + ' SEL, setSelMode, toggleSel, paintSel, renderGrid, makeCard,'
     + ' readSel, load, batchArchive, batchDelete,'
-    + ' setTree: d => { TREE = d; }, setS: d => { Object.assign(S, d); } };');
+    + ' setTree: d => { TREE = d; }, setS: d => { Object.assign(S, d); },'
+    + ' paintTree, toggleFold, subtreeIds, get foldShut() { return FOLD_SHUT; },'
+    + ' get S() { return S; } };');
   page.context.toast = msg => toasts.push(String(msg));   // 函数声明挂 globalThis，能直接换掉
   page.context.ask = async () => true;                    // 弹窗一律点"确定"
   return { ...page, g: page.context.__g, toasts };
 }
 
-function pendingWith(items, prefix = '') {
+function pendingWith(items) {
   return {
-    items, prefix,
+    items,
     total_size: items.reduce((s, i) => s + (i.size || 0), 0),
     ok_count: items.filter(i => i.status === 'ok').length,
     failed_count: items.filter(i => i.status !== 'ok').length,
@@ -362,7 +389,7 @@ async function galleryChecks() {
   p.state.reply = (url, method) => {
     if (url === '/api/imports' && method === 'GET') {
       // 手机上刚把这一行改成了别的名字 → 服务端现在给的是这一份
-      return { body: pendingWith([{ ...owItem, name: '甲', conflict: null }], '') };
+      return { body: pendingWith([{ ...owItem, name: '甲', conflict: null }]) };
     }
     if (url === '/api/imports/confirm') {
       return { body: { imported: 1, skipped: 0, unnamed: 0, overwritten: ['甲', '乙'] } };
@@ -419,6 +446,20 @@ async function galleryChecks() {
   check('M7 取消之后没有迟到的 PATCH 去撞 404',
         !p.calls.some(c => c.method === 'PATCH'), JSON.stringify(p.calls));
   p.state.reply = null;
+
+  // ---- F5：待确认区每行有自己的文件夹下拉，停在服务端给的值上 ----
+  // 整批那个下拉（#pFolder）只是把每行的值一起改掉，真正的落点存在行上 ——
+  // 它要是没画出来或者没停在服务端给的值上，用户看到的就是"选了没反应"。
+  g.setP({ items: [{ id: 31, name: 'A1-1', original_filename: 'a.jpg', size: 100,
+                     status: 'ok', reason: '', import_source: 'upload', conflict: null,
+                     folder_id: 2, tags: [] }],
+           folders: [{ id: 2, name: '部分2', parent_id: null, depth: 0 }],
+           total_size: 100, ok_count: 1, failed_count: 0 });
+  g.paintPending();
+  const row31 = p.doc.getElementById('pRows').querySelector('.prow[data-pid="31"]');
+  const s31 = row31 && row31.querySelector('select.pf');
+  check('F5 图库待确认行有文件夹下拉', !!s31);
+  check('F5 图库待确认行下拉停在 2 上', s31 && s31.value === '2', `value=${s31 && s31.value}`);
 }
 
 /* ---------------- 手机页 ---------------- */
@@ -426,8 +467,9 @@ async function galleryChecks() {
 async function mobileChecks(file) {
   console.log('手机页');
   const page = makePage(file, '/m/tok123');
-  run(page, 'globalThis.__m = { pendRow, loadPend, paintPend, pSaveMap: pSaves,'
-    + ' setP: d => { P = d; }, tail };');
+  // `get P()` 而不是 `P: P` —— P 是 let 绑定的，直接存下来会钉住旧对象
+  run(page, 'globalThis.__m = { pendRow, loadPend, paintPend, fillFolderSelect,'
+    + ' pSaveMap: pSaves, get P() { return P; }, setP: d => { P = d; }, tail };');
   const m = page.context.__m;
   await sleep(20);        // 同上：等页面启动时那次 loadPend() 先落地
 
@@ -492,6 +534,98 @@ async function mobileChecks(file) {
   const rm = row2.querySelector('.rm');
   const pad = getPad(page);
   check('I6 ✕ 的触屏目标大了（内边距 ≥ 10px）', pad.top >= 10 && pad.side >= 10, JSON.stringify(pad));
+
+  // ---- F1：文件夹下拉 ----
+  // ⚠️ FOLDERS 是模块级变量，paintPend() 才会填它。这里直接塞进 P 再重画，
+  //    走的就是线上那条路（列表回来 → 填树 → 画两层的下拉）。
+  m.setP(pendingWith([{ id: 20, name: 'A1-1', original_filename: 'a.jpg', size: 10,
+                        status: 'ok', reason: '', import_source: 'mobile',
+                        conflict: null, folder_id: 3, tags: [] }]));
+  m.P.folders = [
+    { id: 1, name: '样品1', parent_id: null, depth: 0 },
+    { id: 2, name: '部分1', parent_id: 1, depth: 1 },
+    { id: 3, name: '部分2', parent_id: 1, depth: 1 },
+  ];
+  m.paintPend();
+
+  const sel = page.doc.createElement('select');
+  m.fillFolderSelect(sel, 3);
+  const opts = () => sel.childNodes.filter(n => n.tagName === 'OPTION');
+  check('F1 下拉第一项是「不放进文件夹」', opts()[0].textContent === '不放进文件夹',
+        opts()[0] && opts()[0].textContent);
+  check('F1 整棵树都列出来了（3 个文件夹 + 1 个不放进）', opts().length === 4,
+        String(opts().length));
+  check('F1 子文件夹带缩进', opts()[2].textContent.startsWith(' '),
+        JSON.stringify(opts()[2].textContent));
+  check('F1 传进来的值被选中', sel.value === '3', `value=${sel.value}`);
+
+  const fRow = m.pendRow({ id: 21, name: 'A1-1', original_filename: 'a.jpg', size: 10,
+                           status: 'ok', reason: '', import_source: 'mobile',
+                           conflict: null, folder_id: 2, tags: [] });
+  const fsel = fRow.querySelector('select.pf');
+  check('F2 每行有自己的文件夹下拉', !!fsel);
+  check('F2 每行下拉停在服务端给的值上', fsel && fsel.value === '2',
+        `value=${fsel && fsel.value}`);
+
+  // ---- F3：单张也进待确认列表 ----
+  // 真的触发一次上传（文件选择框的 change），再看它发出去的 URL。
+  // 沙箱里有 FormData 的替身（见 makePage），所以这条路能跑通。
+  const fin = page.doc.getElementById('f');
+  fin.files = [{ name: 'x.jpg' }];
+  fin.dispatch('change');
+  await sleep(50);
+  check('F3 上传时恒为 pending（单张也停下来选）',
+        page.calls.some(c => c.method === 'POST' && String(c.url).includes('mode=pending')),
+        JSON.stringify(page.calls.map(c => c.url)));
+
+  // ---- F4：文件夹默认值来自地址栏（二维码里带过来的）----
+  const withFolder = makePage(file, '/m/tok123', '?folder=3');
+  run(withFolder, 'globalThis.__m2 = { DEFAULT_FOLDER };');
+  check('F4 地址里的 folder=3 被读成默认文件夹',
+        withFolder.context.__m2.DEFAULT_FOLDER === 3,
+        String(withFolder.context.__m2.DEFAULT_FOLDER));
+
+  // 地址被人手改坏了（或者从旧二维码进来）不能白屏 —— 当没有就好
+  const badFolder = makePage(file, '/m/tok123', '?folder=abc');
+  run(badFolder, 'globalThis.__m3 = { DEFAULT_FOLDER };');
+  check('F4 地址里的 folder 不是数字时当没有',
+        badFolder.context.__m3.DEFAULT_FOLDER === null,
+        String(badFolder.context.__m3.DEFAULT_FOLDER));
+
+  // ---- G：每行第二行的三个孔位下拉（2026-09-23 加的）----
+  // 手机传完就能直接选孔位，不用先跑到电脑上图库打标签。
+  const row7 = m.pendRow({ id: 7, name: 'IMG_7', original_filename: 'IMG_7.jpg',
+                           size: 100, status: 'ok', reason: '',
+                           import_source: 'mobile', conflict: null,
+                           folder_id: null, tags: ['B5-1'] });
+  const bot = row7.querySelector('.pbot');
+  const sels = bot ? bot.querySelectorAll('select.tg') : [];
+  check('G1 每行第二行有文件夹 + 三个孔位下拉', !!bot && sels.length === 3,
+        `pbot=${!!bot} 孔位下拉=${sels.length}`);
+  check('G2 已有的孔位拆回三个下拉',
+        sels.length === 3 && sels.map(s => s.value).join('/') === 'B/5/孔1',
+        sels.map(s => s.value).join('/'));
+
+  const sent = c => (c && c.body ? JSON.parse(c.body) : null);
+  page.calls.length = 0;
+  sels[1].value = '9';
+  await Promise.all(sels[1].dispatch('change'));
+  const g3 = sent(page.calls.find(c => c.method === 'PATCH'));
+  check('G3 改一个下拉就发 PATCH tags', !!g3 && String(g3.tags) === 'B9-1',
+        JSON.stringify(g3));
+
+  page.calls.length = 0;
+  sels[1].value = '';                        // 全选「—」= 不标
+  await Promise.all(sels[1].dispatch('change'));
+  const g4 = sent(page.calls.find(c => c.method === 'PATCH'));
+  check('G4 全选「—」发的是空数组（不是干脆不发这个字段）',
+        !!g4 && Array.isArray(g4.tags) && g4.tags.length === 0, JSON.stringify(g4));
+
+  // 这几个处理函数都会让服务端回整份列表、整表重画 —— 重画会把别人行里
+  // 还堵在 400ms 定时器里的名字顶回旧值。所以每个前面都得先冲一次。
+  const flushes = (page.html.match(/await pFlushNames\(\)/g) || []).length;
+  check('G5 会让整表重画的地方都先冲名字（行文件夹/孔位/删除/整批/确认）',
+        flushes >= 5, `${flushes} 处`);
 }
 
 // 从手机页的内联 CSS 里读 .prow .rm 的 padding。手指点得中与否没法在
@@ -798,13 +932,191 @@ function toneChecks() {
   check('R7 点「裁好了」之前把框夹回照片内（越界框不会进库、也不会把画面弄空白）',
         /function clampToPhoto\(/.test(code) && /const box = clampToPhoto\(S\.crop\)/.test(code)
         && /S\.crop = box;/.test(code) && /JSON\.stringify\(box\)/.test(code));
+
+  // —— 图上那行字（用户 2026-09-23：先是反馈"看不清"调大了字号，
+  //    然后要一个能同时管长度数字和标尺字的滑块）——
+  //    守的是**只有一份字号**：导出不是另画一套，而是把屏幕上这套绘制用 uz()
+  //    原样放大重跑。哪天有人给导出单开一个字号，两边就又对不上了（修过四轮）。
+  //    真正的行为验证在 tests/web_geom_check.mjs（那边能真的跑一遍导出）。
+  const fontSets = code.match(/ctx\.font\s*=\s*[^;]+/g) || [];
+  check('C1 每一处 ctx.font 都来自 labelFont()（没有第二份字号）',
+        fontSets.length > 0 && fontSets.every(x => /labelFont\(\)/.test(x)),
+        fontSets.join(' | '));
+  check('C1b 字号只在声明和 applyFontPx 里出现（导出不会偷偷改它）',
+        (code.match(/FONT_PX\s*=[^=]/g) || []).length === 2,
+        String((code.match(/FONT_PX\s*=[^=]/g) || []).length));
+
+  // —— 「图上字号」滑块：管的是长度数字 + 标尺字，独立存、关照片也不清 ——
+  check('C4 导出面板里有「图上字号」滑块，接在 applyFontPx 上',
+        /id="exFont"/.test(html)
+        && /\$\('exFont'\)\.addEventListener\('input'/.test(code)
+        && /function applyFontPx\(/.test(code));
+  // 那两个勾选框是用户点名要撤掉的；重新加回来就得同时把渲染代码也加回去，
+  // 否则勾了没反应（这次撤的时候把画编号/备注那两段一起删了）。
+  check('C5 已撤掉的「显示测量编号 / 显示备注文字」没有半途回来',
+        !/exSeq|exNotes/.test(html) && !/exSeq|exNotes/.test(code));
+
+  // —— 「关掉这张」：只把照片从屏幕上卸下来 ——
+  //    这几条只证明"按钮还在、还接着那个函数"，证明不了跑起来对
+  //    （整页在假 DOM 里跑不起来，理由见上面 toneLut 那段）。
+  // ⚠️ 按钮的 id 在 HTML 里、不在 <script> 里 —— 两条得分别对着 html 和 code 查
+  check('C2 侧栏的「关掉这张」还接在 closePhoto 上',
+        /id="btnClose"/.test(html)
+        && /\$\('btnClose'\)\.addEventListener\('click',/.test(code)
+        && /function closePhoto\(\)/.test(code));
+  // 删除的收尾必须和它共用一份 —— 各写一遍的话，往 S 里加字段时总有一边会漏
+  check('C3 删除照片走的是同一个 closePhoto',
+        /closePhoto\(\);\s*\n\s*await loadPhotos\(\);/.test(code));
+}
+
+/* ---------------- 测量页：下拉框里写什么 ---------------- */
+
+// 和 toneLut 同一套路：整页跑不起来，就把纯函数从源码里抠出来单独跑。
+function labelChecks() {
+  console.log('测量页 · 下拉框文案');
+  const html = readFileSync(join(ROOT, 'web', 'measure.html'), 'utf8');
+  const code = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)]
+    .map(m => m[1]).join('\n');
+  const ctx = vm.createContext({});
+  vm.runInContext(pickFunc(code, 'photoLabel'), ctx);
+  const f = ctx.photoLabel;
+  if (typeof f !== 'function') throw new Error('photoLabel 跑起来不是函数');
+
+  // FOLDER_NAMES 只有叶子名（loadFolderNames 装的），所以 nameOf 就是它
+  const nameOf = id => ({ 2: '部分2' }[id] || '');
+  const label = (o) => f(o, nameOf);
+
+  check('N1 有文件夹有标签 → 部分2-A1-1',
+        label({ name: 'A1-1', folders: [2], tags: ['A1-1'], line_count: 0 }) === '部分2-A1-1');
+  check('N2 只有文件夹 → 部分2-名字',
+        label({ name: 'IMG_1', folders: [2], tags: [], line_count: 0 }) === '部分2-IMG_1');
+  check('N3 只有标签 → A1-1',
+        label({ name: '随便', folders: [], tags: ['A1-1'], line_count: 0 }) === 'A1-1');
+  check('N4 都没有 → 就是名字',
+        label({ name: '随便', folders: [], tags: [], line_count: 0 }) === '随便');
+  check('N5 量过的带尾巴',
+        label({ name: 'A1-1', folders: [2], tags: ['A1-1'], line_count: 3 })
+          === '部分2-A1-1（已量 3 条）');
+  // 文件夹被删了 / FOLDER_NAMES 还没加载回来 —— 不能显示成 "undefined-名字"
+  check('N6 文件夹名字查不到 → 退回名字',
+        label({ name: 'IMG_1', folders: [99], tags: [], line_count: 0 }) === 'IMG_1');
+  check('N7 一张图在好几个文件夹里时只取第一个',
+        label({ name: 'x', folders: [2, 7], tags: [], line_count: 0 }) === '部分2-x');
+  check('N8 老数据没有 folders/tags 字段也不炸',
+        label({ name: 'x', line_count: 0 }) === 'x');
+}
+
+/* ---------------- 图库页：文件夹树的展开 / 收起 ---------------- */
+
+// 用户原话：「文件夹左边可以给我一个收起和展开子文件夹的功能，对每个层级有效，
+// 点一个只展开当前下一级的文件夹，不是所有子文件夹」。这几条就钉这句话。
+async function treeChecks() {
+  console.log('图库页 · 文件夹树展开收起');
+  const p = galleryPage();
+  const g = p.g;
+  await sleep(20);
+
+  const nodes = () => [...p.doc.getElementById('treeList').querySelectorAll('.tnode')];
+  const labels = () => nodes().map(b => b.querySelector('.tname').textContent);
+  const byName = n => nodes().find(b => b.querySelector('.tname').textContent === n);
+  const caret = n => byName(n).querySelector('.tcaret');
+  // 假 DOM 不会冒泡，也没有真事件对象；补一个空的 stopPropagation 让它跑得下去
+  const click = n => caret(n).dispatch('click', { stopPropagation() {} });
+  const setTree = items => {
+    g.setTree({ items, total: 9, uncategorized: 1 });
+    g.foldShut.clear();
+    g.paintTree();
+  };
+
+  // 乙(2) 套 丙(3) 套 戊(5)；丁(4) 在最外层且没有子文件夹
+  setTree([
+    { id: 2, name: '乙', parent_id: null, depth: 0, count: 5 },
+    { id: 3, name: '丙', parent_id: 2, depth: 1, count: 2 },
+    { id: 5, name: '戊', parent_id: 3, depth: 2, count: 1 },
+    { id: 4, name: '丁', parent_id: null, depth: 0, count: 1 },
+  ]);
+  check('T1 默认全展开（和以前一样，不会一上来就把看惯的列表变样）',
+        labels().join() === '全部照片,未分类,乙,丙,戊,丁', labels().join());
+
+  check('T2 有子文件夹的才有三角，没有的留空位（不然同层的名字会左右错开）',
+        caret('乙').textContent === '▾' && caret('丁').textContent === '',
+        `乙=${caret('乙').textContent} 丁=${caret('丁').textContent}`);
+
+  click('乙');
+  check('T3 收起乙 → 它下面两级一起看不见，别的行照常在',
+        labels().join() === '全部照片,未分类,乙,丁', labels().join());
+  check('T3 收起后三角朝右', caret('乙').textContent === '▸', caret('乙').textContent);
+
+  click('乙');
+  check('T4 再展开 → 只回到下一级（丙），孙子戊还藏着',
+        labels().join() === '全部照片,未分类,乙,丙,丁', labels().join());
+  check('T4 收起状态存进了 localStorage（⭐ 刷新保持现状）',
+        String(p.context.localStorage.getItem('jltx.foldShut')).includes('5'),
+        String(p.context.localStorage.getItem('jltx.foldShut')));
+
+  click('丙');
+  check('T5 再点丙 → 到第三层', labels().join() === '全部照片,未分类,乙,丙,戊,丁',
+        labels().join());
+
+  // ⚠️ 这条是最容易做错的：只把「收起」标记清掉的话，刚展开过的丙会跟着冒出来，
+  // 看着还是一下摊开整棵树 —— 用户明确说了不要那样。
+  click('乙');          // 收起
+  click('乙');          // 再展开
+  check('T6 里面开过的情况下重开乙 → 仍然只展开下一级',
+        labels().join() === '全部照片,未分类,乙,丙,丁', labels().join());
+
+  // 点三角只收展开开，不能顺手把这一行选成当前文件夹
+  g.setS({ folder: '' });
+  click('乙');
+  check('T7 点三角不会把那一行选成当前文件夹', g.S.folder === '', String(g.S.folder));
+}
+
+/* ---------------- 图库打标签：「编号」+ 孔位 → 名字 ---------------- */
+
+// 打标签对话框那段 JS 在这个假 DOM 里跑不起来（要弹窗、要缩略图），
+// 但「编号 + 孔位拼成什么名字」是个纯函数，照 pickFunc 那条先例抠出来单独跑就够。
+// 抠的是 gallery.html 里的真源码 —— 规则一改这里立刻红。
+function plateChecks() {
+  console.log('图库 · 编号拼名字');
+  const html = readFileSync(join(ROOT, 'web', 'gallery.html'), 'utf8');
+  const code = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)]
+    .map(m => m[1]).join('\n');
+  const ctx = vm.createContext({});
+  vm.runInContext(pickFunc(code, 'nameWithPlate'), ctx);
+  const np = ctx.nameWithPlate;
+
+  // 用户给的例子 + 结尾那个孔号：编号 + '-' + 行 + '-' + 列 + '-' + 孔号
+  check('P1 编号 + 孔位拼成 20260923-29-B-5-1',
+        np('20260923-29', 'B5-1') === '20260923-29-B-5-1', np('20260923-29', 'B5-1'));
+  // 结尾那个孔号是 2026-09-23 用户要求补的：不写的话同一个池的两个孔
+  // 会拼出一模一样的名字，在列表里分不出谁是谁。
+  check('P2 同一个池的两个孔拼出两个不同的名字',
+        np('P1', 'B5-1') === 'P1-B-5-1' && np('P1', 'B5-2') === 'P1-B-5-2');
+  check('P3 两位数的列号照样拼（A10-1）', np('X', 'A10-1') === 'X-A-10-1');
+  // 三个下拉没选全时 tag 是空串：只剩编号本身。用户填了编号就照他填的来，
+  // 不能一声不吭丢掉 —— 他会以为名字已经改好了。
+  check('P4 孔位没选全时名字只剩编号', np('P1', '') === 'P1');
+  // 「编号留空 = 不改名字」是在 collect 里分叉的，这条钉住那个分叉
+  check('P5 编号留空时发的是空串（服务端一个字都不改）',
+        /name:\s*no\s*\?\s*nameWithPlate\(no,\s*t\)\s*:\s*''/.test(code));
+  check('P6 行里有编号框，整批那个一改覆盖所有行',
+        /className = 'tagNo'/.test(code) && /className = 'tagBatch'/.test(code)
+        && /for \(const r of rows\) r\._no\.value = bno\.value/.test(code));
+  // 整批框必须在滚动区外面：塞进 .tagList 的话列表一长它就跟着滚没了
+  check('P7 整批框在滚动区外面',
+        /wrap\.append\(bb, list\)/.test(code) && /list\.append\(row\)/.test(code)
+        && !/wrap\.className = 'tagList'/.test(code));
 }
 
 /* ---------------- 跑 ---------------- */
 
 await galleryChecks();
 await selModeChecks();
+await treeChecks();
 toneChecks();
+labelChecks();
+plateChecks();
+
 const mobileFile = process.argv[2];
 if (mobileFile) await mobileChecks(mobileFile);
 else console.log('（没给手机页文件，跳过手机页检查）');

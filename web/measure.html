@@ -320,6 +320,8 @@ body.dragging #drop { display: flex; }
       <div class="actions">
         <button id="btnUndo" disabled>撤销</button>
         <button id="btnClear" disabled>清空</button>
+        <button id="btnClose" type="button" disabled
+                title="把这张从屏幕上拿开，回到空白页。照片和测量记录都还在，下拉框里能选回来">关掉这张</button>
       </div>
     </section>
 
@@ -355,8 +357,11 @@ body.dragging #drop { display: flex; }
           <option value="4">4×</option>
         </select>
       </div>
-      <label class="chk"><input type="checkbox" id="exSeq"> 显示测量编号</label>
-      <label class="chk"><input type="checkbox" id="exNotes"> 显示备注文字</label>
+      <div class="slider">
+        <label for="exFont">字号</label>
+        <input id="exFont" type="range" min="10" max="34" step="1" value="16">
+        <output id="exFontV">16</output>
+      </div>
       <div class="actions">
         <button id="btnExportPng" class="primary" disabled>导出图片</button>
         <button id="btnExportCsv" disabled>导出表格</button>
@@ -420,8 +425,12 @@ const HANDLE_R = 12;     // 控制点命中半径（屏幕像素）
 const CROP_R = 11;       // 框选控制点的命中半径
 const MIN_CROP_PX = 24;  // 裁剪框最小边长（屏幕像素），别让它塌成一条线
 const INK = '#0b0a08';   // 描边打底色：保证白色图形在亮液滴上也看得见
+// 标签周围的几个尺寸：数字都是照 FONT_BASE(16px) 那个字号定的，
+// 用的时候一律乘 fontRatio() —— 字号调大时它们要一起长。
 const LABEL_LIFT = 20;   // 长度标签默认抬到线段上方这么多屏幕像素，别压住线
 const LABEL_PAD = 10;    // 选中框比文字宽出多少（留够深色描边的量）
+const LABEL_BOX_H = 26;  // 选中框的高度（Ctrl 点标签才画的那个虚线框）
+const LABEL_HALO = 4;    // 文字外面那圈深色描边多粗
 
 const img = new Image();
 const cv = document.getElementById('cv');
@@ -565,9 +574,21 @@ function dot(p, r, fill, ring) {
   if (ring) ctx.stroke();
 }
 
+// 图上字号。**长度数字和标尺字共用这一个**（两处都走 labelFont()）——
+// 用户 2026-09-23 要的就是一个能同时调这两个的旋钮，侧栏导出面板里那个滑块。
+// 线条粗细是另一组量，不跟着它走。
+const FONT_BASE = 16;    // 下面 LABEL_* 那几个尺寸都是照这个字号写的
+let FONT_PX = 16;        // 用户可调
+// 字号换档时，标签周围的尺寸（抬多高、选中框多大、描边多粗）要跟着一起缩放 ——
+// 写死的话，字号调大就会"大字配小框"：文字压在线条上、选中框套不住字。
+const fontRatio = () => FONT_PX / FONT_BASE;
+
 // 字号只取一次。label() 和 labelBox() 必须用同一个 font，
 // 否则量出来的宽度和画出来的对不上，选中框就会错位。
-const FONT_PX = 13;
+//
+// ⚠️ 只有这一个字号，**别**给导出单独开一个：导出是把屏幕上这套绘制用 uz()
+// 原样放大重跑一遍，字号跟着一起长。分成两份就又变成"屏幕上和导出的对不上"——
+// 那个坑以前修了四轮。
 let _fontPx = 0, _font = '';
 function labelFont() {
   const px = uz(FONT_PX);
@@ -583,7 +604,8 @@ function label(text, x, y, color, align) {
   ctx.textAlign = align || 'center';
   ctx.textBaseline = 'middle';
   ctx.lineJoin = 'round';
-  ctx.lineWidth = uz(4); ctx.strokeStyle = INK; ctx.strokeText(text, x, y);
+  ctx.lineWidth = uz(LABEL_HALO * fontRatio());   // 描边跟着字号走，大字的边不会显细
+  ctx.strokeStyle = INK; ctx.strokeText(text, x, y);
   ctx.fillStyle = color; ctx.fillText(text, x, y);
 }
 
@@ -593,14 +615,15 @@ function label(text, x, y, color, align) {
 function labelScreen(L) {
   const [mx, my] = toS((L.x1 + L.x2) / 2, (L.y1 + L.y2) / 2);
   return [mx + (L.label_dx || 0) * S.view.s,
-          my + (L.label_dy || 0) * S.view.s - uz(LABEL_LIFT)];
+          my + (L.label_dy || 0) * S.view.s - uz(LABEL_LIFT * fontRatio())];
 }
 
 function labelBox(L) {
   const [x, y] = labelScreen(L);
   ctx.font = labelFont();
   const w = ctx.measureText(fmtLen(lineUm(L))).width;
-  return { x, y, w: w + uz(LABEL_PAD) * 2, h: uz(26) };
+  return { x, y, w: w + uz(LABEL_PAD * fontRatio()) * 2,
+           h: uz(LABEL_BOX_H * fontRatio()) };
 }
 
 // 从后往前找：后画的压在上面，命中的该是看得见的那一个
@@ -638,20 +661,8 @@ function drawLines() {
       ctx.restore();
     }
     label(fmtLen(lineUm(L)), b.x, b.y, L.color);
-    // 编号和备注：勾上就在画布上画出来 —— 「看到的 = 导出的」，
-    // 不勾就是现在这个干净的样子
-    if (exportSeq.checked) {
-      label(`#${L.seq}`, p1[0] + uz(9), p1[1] - uz(9), L.color, 'left');
-    }
-    if (exportNotes.checked && L.note) {
-      label(L.note, p2[0] + uz(9), p2[1] + uz(9), '#ffffff', 'left');
-    }
   }
 }
-
-// 导出面板上那两个勾选框。画布和导出共用它们，所以不会对不上。
-const exportSeq = document.getElementById('exSeq');
-const exportNotes = document.getElementById('exNotes');
 
 // ---------- 框选导出区域 ----------
 function normCrop(a, b) {
@@ -751,7 +762,8 @@ function drawPending() {
   dot(p2, 4.5, '#ffffff', 2.5);
 
   if (S.umpp) {
-    label(fmtLen(px * S.umpp), (p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2 - 20, '#ffffff');
+    label(fmtLen(px * S.umpp), (p1[0] + p2[0]) / 2,
+          (p1[1] + p2[1]) / 2 - uz(LABEL_LIFT * fontRatio()), '#ffffff');
   }
 }
 
@@ -1005,6 +1017,7 @@ function syncPanel() {
   const hasImg = !!S.imageId;
   $('btnRename').disabled = !hasImg;
   $('btnDelete').disabled = !hasImg;
+  $('btnClose').disabled = !hasImg;      // 没打开照片时没什么可关的
   for (const id of ['enB', 'enC', 'enS', 'enAuto', 'enReset', 'enHold']) {
     $(id).disabled = !hasImg;
   }
@@ -1025,10 +1038,23 @@ $('exCrop').addEventListener('change', e => {
   fitView(); render(); syncPanel();
 });
 
-// 这几个勾选框/下拉框直接改画布 —— 勾上就能看见效果，导出跟它一模一样
-for (const id of ['exSeq', 'exNotes', 'exScale']) {
-  $(id).addEventListener('change', () => { render(); syncPanel(); });
+// 标尺位置改了直接重画 —— 改完就能看见效果，导出跟它一模一样
+$('exScale').addEventListener('change', () => { render(); syncPanel(); });
+
+// 图上字号滑块。**单独存**，不进 session：它是"我这台机器看着舒服的字号"，
+// 不是某一张照片的事 —— 点「关掉这张」清了 session 也不该把它带回默认。
+// 拖动时立刻重画，松手前就能看见大小合不合适。
+const FONT_KEY = 'jltx.font';
+function applyFontPx(n) {
+  FONT_PX = Math.min(34, Math.max(10, Math.round(Number(n) || FONT_BASE)));
+  $('exFont').value = String(FONT_PX);
+  $('exFontV').textContent = String(FONT_PX);
 }
+$('exFont').addEventListener('input', () => {
+  applyFontPx($('exFont').value);
+  try { localStorage.setItem(FONT_KEY, String(FONT_PX)); } catch {}
+  render();
+});
 
 $('exSelect').addEventListener('change', e => {
   cropMode = e.target.checked;
@@ -1825,8 +1851,13 @@ function renderExport(region, sup) {
     dpr = 1;                       // 离屏画布已经是目标像素，不用再乘设备像素比
     EXPORTING = true;
     EXPORT_W = region.x1 - region.x0;
-    // 屏幕上 1px → 导出图里 sup / 当前缩放 个像素
-    UIZ = sup / keep.s;
+    // 屏幕上 1px → 导出图里多少个像素。
+    // ⚠️ 分母是 **S.fit**（整张照片铺满屏幕那个比例），**不是** keep.s（当前缩放）。
+    // 用当前缩放的话，同一张图"放大着看好细节再导出"就会得到一个字更小、线更细的
+    // 图 —— 缩放 0.25 和缩放 5 导出的字号能差 20 倍，导两次都不一样（实测）。
+    // 用户 2026-09-23 报的就是这个。以 S.fit 为准 = "导出图 = 你把照片铺满屏幕时
+    // 看到的样子"，跟你当时缩放到哪一档无关。
+    UIZ = sup / (S.fit || keep.s);
     S.view.s = sup;                // 原图坐标 → 离屏像素
     S.view.tx = -region.x0 * sup;
     S.view.ty = -region.y0 * sup;
@@ -1905,6 +1936,28 @@ $('btnExportCsv').addEventListener('click', exportCsv);
 
 $('btnUndo').addEventListener('click', doUndo);
 
+// 把当前这张从屏幕上卸下来，回到"还没打开任何照片"的空白页。
+// 照片和测量记录**一个都不删**（要删走「删除」），下拉框里随时选得回来。
+// 空着手是为了接下一张：什么都没打开时，拖进来/贴上来的照片会自动显示出来
+//（uploadFiles 里那句 openNew 就是这么判的 —— 开着照片时它只入库、不跳过来）。
+function closePhoto() {
+  S.imageId = null; S.name = ''; S.W = 0; S.H = 0;
+  S.circle = null; S.umpp = null; S.lines = []; S.crop = null; S.barXY = null;
+  cropUndo = null; cropMode = false;
+  $('exSelect').checked = false;
+  hist.past.length = 0; hist.future.length = 0;
+  clearSession();          // 刷新不能把刚卸下去的那张又拉回来
+  writeScopeUrl();         // 地址栏里那个 ?id= 跟着去掉
+  $('empty').hidden = false;
+  $('picker').value = '';  // 下拉框别停在一张看着像"打开着"的照片上
+  render(); syncPanel();
+}
+
+$('btnClose').addEventListener('click', () => {
+  closePhoto();
+  setStatus('已关掉这张 —— 拖照片进来或按 Ctrl+V，新照片会自动打开');
+});
+
 $('btnClear').addEventListener('click', async () => {
   if (!confirm('清空这张图的全部测量记录？\n（按 Ctrl+Z 可以撤销回来）')) return;
   const gone = S.lines.slice();
@@ -1933,6 +1986,10 @@ function scopeName() {
   return FOLDER_NAMES[S.scope] || '这个文件夹';
 }
 
+// 某个文件夹 id 叫什么（下拉框里要用）。查不到就空串 ——
+// 显示成 "undefined-名字" 比不显示前缀还糟。
+const folderName = id => FOLDER_NAMES[String(id)] || '';
+
 function writeScopeUrl() {
   const parts = [];
   if (S.imageId !== null) parts.push(`id=${S.imageId}`);
@@ -1956,6 +2013,20 @@ $('scopeAll').addEventListener('click', async () => {
 });
 
 // ---------- 照片列表 ----------
+// 下拉框里那一行写什么。纯函数：不碰 DOM、不读全局 —— 这样它能被
+// tests/web_behavior_check.mjs 从源码里抠出来单独跑（整页在假 DOM 里跑不起来）。
+// ⚠️ 只带**最里面那层**文件夹名，不带整条路径：用户说了名字别太长，
+//    而且这和导出的命名规则一致（export_plan 的前缀也是直接父文件夹的名字）。
+function photoLabel(it, nameOf) {
+  const fn = (it.folders && it.folders.length) ? (nameOf(it.folders[0]) || '') : '';
+  const tg = (it.tags && it.tags.length) ? it.tags[0] : '';
+  const head = fn && tg ? `${fn}-${tg}`
+             : fn       ? `${fn}-${it.name}`
+             : tg       ? tg
+             :            it.name;
+  return it.line_count ? `${head}（已量 ${it.line_count} 条）` : head;
+}
+
 async function loadPhotos(selectId) {
   try {
     const u = new URLSearchParams({ limit: '1000' });
@@ -1971,7 +2042,7 @@ async function loadPhotos(selectId) {
     for (const it of d.items) {
       const o = document.createElement('option');
       o.value = String(it.id);
-      o.textContent = it.line_count ? `${it.name}（已量 ${it.line_count} 条）` : it.name;
+      o.textContent = photoLabel(it, folderName);
       sel.append(o);
     }
     // 上限 1000。超了就明说还有多少张没列出来 —— 静默截断会让用户
@@ -1999,7 +2070,6 @@ function saveSession() {
     localStorage.setItem(SESSION_KEY, JSON.stringify({
       imageId: S.imageId, view: S.view, cropMode,
       ex: {
-        seq: $('exSeq').checked, notes: $('exNotes').checked,
         scale: $('exScale').value, supersample: $('exSuper').value,
       },
     }));
@@ -2065,8 +2135,6 @@ async function openPhoto(id, restore) {
       // 再刷新又回来了，用户会以为工具在抽风）。
       if (cropMode) cropUndo = S.crop ? { ...S.crop } : null;
       const ex = restore.ex || {};
-      $('exSeq').checked = !!ex.seq;
-      $('exNotes').checked = !!ex.notes;
       if (ex.scale) $('exScale').value = ex.scale;
       if (ex.supersample) $('exSuper').value = ex.supersample;
     } else {
@@ -2223,15 +2291,10 @@ $('btnDelete').addEventListener('click', async () => {
     if (!r.ok) throw new Error(await errText(r, '删不掉'));
     await r.json();
 
-    S.imageId = null; S.name = ''; S.W = 0; S.H = 0;
-    S.circle = null; S.umpp = null; S.lines = []; S.crop = null; S.barXY = null;
-    cropUndo = null; cropMode = false;
-    $('exSelect').checked = false;
-    hist.past.length = 0; hist.future.length = 0;
-    clearSession();
-    $('empty').hidden = false;
+    // 照片没了之后的收尾和「关掉这张」是同一件事，共用一份 ——
+    // 各写一遍的话，往后往 S 里加字段时总有一边会漏（删完还留着上一张的标定）
+    closePhoto();
     await loadPhotos();
-    render(); syncPanel();
     setStatus('已删除');
   } catch (err) {
     setStatus(err.message, true);
@@ -2245,6 +2308,9 @@ resize();
   const u = new URLSearchParams(location.search);
   const f = u.get('folder');
   S.scope = f ? f : '';                  // 没有这个参数、或者空值 = 全部
+
+  // 图上字号：读回来再画，免得刷一下先按默认 16 画一遍、再跳成你设的那个
+  try { applyFontPx(localStorage.getItem(FONT_KEY)); } catch { applyFontPx(FONT_BASE); }
 
   // 孔直径要**先读** —— 它决定页面上那几个 "孔径 X mm" 显示什么，
   // 也决定用户接着拖圆时那串实时数字按多大的孔算。

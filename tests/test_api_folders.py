@@ -73,8 +73,12 @@ def test_tree_is_depth_first_with_depth(client):
     assert [f["id"] for f in _tree(client)["items"]] == [a, a1, a2, b]
 
 
-def test_tree_counts_are_direct_not_recursive(client):
-    """父文件夹的数字只算直接放进去的 —— 要跟点进去看到的格子数一致。"""
+def test_tree_counts_include_subfolders(client):
+    """父文件夹的数字 = 整棵子树的张数（点进去看到的格子数就是这个数）。
+
+    2026-09-23 改的：原先是"只算直接放进去的"，用户要求点大文件夹能看到
+    子文件夹里的照片，两个数字必须跟着一起改 —— 不然树上写 1 张、点进去 2 张。
+    """
     a = _mk(client, "6月批次")
     sub = _mk(client, "样品A", a)
     p1, p2 = _photo(client, "a.png"), _photo(client, "b.png")
@@ -82,7 +86,7 @@ def test_tree_counts_are_direct_not_recursive(client):
     _put_folders(client, p2, [a])
 
     by = {f["id"]: f["count"] for f in _tree(client)["items"]}
-    assert by[a] == 1 and by[sub] == 1
+    assert by[a] == 2 and by[sub] == 1
 
 
 def test_tree_totals(client):
@@ -233,7 +237,8 @@ def test_copy_duplicates_structure_and_membership(client):
 
     by = {f["id"]: f["count"] for f in items}
     assert by[sub] == 1 and by[copy_sub["id"]] == 1     # 两个「样品A」里都有它
-    assert by[new_id] == 0                             # 照片原本就在子文件夹里，根节点直接装 0
+    # 数字是子树计数：照片虽然在子文件夹里，根节点看下去也装得到（2026-09-23 改）
+    assert by[new_id] == 1
     assert _tree(client)["total"] == 1                 # 还是那一张，没变成两份
 
 
@@ -400,13 +405,19 @@ def test_list_filter_folder_total_is_not_page_size(client):
     assert d["total"] == 3 and len(d["items"]) == 1
 
 
-def test_list_filter_folder_ignores_subfolders(client):
-    """父文件夹只看直接放进去的，和树上标的数字一致。"""
+def test_list_filter_folder_includes_subfolders(client):
+    """点父文件夹要看到子文件夹里的照片（2026-09-23 用户要求改的）。
+
+    和树上那个数字是同一套条件 —— 两边不一致的话就是"树上写 N 张、
+    点进去看到别的张数"。db 层的等价断言在 tests/test_db_subtree.py。
+    """
     a = _mk(client, "A")
     sub = _mk(client, "B", a)
     p = _photo(client, "深处的.png")
     _put_folders(client, p, [sub])
-    assert client.get(f"/api/images?folder={a}").json()["total"] == 0
+    d = client.get(f"/api/images?folder={a}").json()
+    assert d["total"] == 1
+    assert [i["name"] for i in d["items"]] == ["深处的"]   # 名字是文件名去掉后缀
 
 
 def test_list_folder_rejects_negative(client):

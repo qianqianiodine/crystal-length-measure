@@ -6,10 +6,12 @@
 设计定案（2026-09-20，见 docs/superpowers/specs/2026-09-20-待确认导入列表-design.md）：
 - **全局一份列表，没有批次 id** —— 手机端一个请求传一张，服务端看不出"这 5 张
   是同一批"。与其让前端编一个批次号传进来，不如共用一份。
-- 每行的 `name` 只存**不含前缀**的那半截；前缀在 pending_state 表里。
-  这样清掉前缀时每一行自动退回自己的 base，不需要撤销任何东西。
-- 统一前缀存服务端而不是浏览器：手机和电脑看的是同一份列表，前缀放本地存储
-  的话两边各记一个，确认出来的名字会不一样。
+- 每行的 `name` 就是确认导入时用的名字，确认之前谁也不会再往上拼东西。
+  ⚠️ **统一前缀 2026-09-23 去掉了**（用户要求："我现在可以不要这个统一前缀了"）。
+  它原来干的事现在由打标签对话框里那个「编号」接着做：编号 + 孔位 → 名字
+  （见 `POST /api/images/batch-tags`）。前缀是**服务端全局**的一个值，手机和电脑
+  共用一份 —— 只删掉手机页那个输入框、留着服务端，就会变成"手机上看不见、
+  名字却被偷偷加了一截"，所以是整条路一起删的。
 
 ⚠️ 同一批处理函数挂了**两条路径**：`/api/imports`（电脑）和
 `/m/{token}/imports`（手机）。手机必须走后者 —— main.py 的 lan_guard 对非本机
@@ -17,6 +19,7 @@
 令牌不用在这里再验一遍（中间件已经在路由之前卡死了），所以处理函数里
 **不声明** token 参数 —— 声明了它就会变成桌面路由上一个必填的 query 参数。
 """
+import json
 import threading
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -24,15 +27,13 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from app import db, storage, thumbs
-from app.api.images import (_BAD_CHARS, _name_from_file, _pending_summary,
-                            _reason, _unique_name, _validate_name)
+from app.api.images import (_TAG_RE, _name_and_tags, _name_from_file,
+                            _pending_summary, _reason, _unique_name,
+                            _validate_name)
 from app.db import get_db
 
 router = APIRouter(prefix="/api/imports", tags=["imports"])
 phone = APIRouter(prefix="/m/{token}/imports", tags=["mobile"])
-
-# 前缀不能太长：它要套在每一行的名字前面，而名字总共只有 100 字。
-PREFIX_MAX_LEN = 60
 
 # confirm_pending 是同步函数，Starlette 会把它丢进线程池 —— 两个请求是**真的并行**。
 # 列表又是电脑和手机共用一份：两边同时点「确认导入」（或者手快点两下），
@@ -55,12 +56,17 @@ def both(method: str, path: str):
 
 def _pending_list(conn) -> dict:
     """列表的完整形状。**每个改动列表的接口都返回它** —— 前端一次重画，
-    省掉一整类"两边各记一份状态、慢慢对不上"的毛病。"""
+    省掉一整类"两边各记一份状态、慢慢对不上"的毛病。
+
+    folders 也塞在这里返回（不再单独开一个 /m/<令牌>/folders）：
+    手机页画那个文件夹下拉要用它，而它每次改列表都会跟着刷 —— 多一次往返
+    只会多一个"树是旧的、行是新的"的窗口。
+    """
     items = [_pending_summary(conn, r) for r in db.list_pending(conn)]
     ok = [i for i in items if i["status"] == "ok"]
     return {
         "items": items,
-        "prefix": db.get_prefix(conn),
+        "folders": db.list_folders(conn),
         "total_size": sum(i["size"] for i in ok),
         "ok_count": len(ok),
         "failed_count": len(items) - len(ok),
@@ -98,25 +104,58 @@ def import_thumb(pid: int, conn=Depends(get_db)):
                                  "X-Content-Type-Options": "nosniff"})
 
 
-class NameIn(BaseModel):
-    name: str
+class PendingIn(BaseModel):
+    name: str | None = None
+    folder_id: int | None = None
+    tags: list[str] | None = None
 
 
 @both("patch", "/{pid}")
-def patch_pending(pid: int, body: NameIn, conn=Depends(get_db)) -> dict:
-    """改这一行的名字（只有不含前缀的那半截）。
+def patch_pending(pid: int, body: PendingIn, conn=Depends(get_db)) -> dict:
+    """改这一行的名字 / 文件夹 / 标签。都是可选的 —— 只传一个就只改那个。
 
-    **允许空字符串** —— 用户清空重打的中间态就是空的，那时候弹 400 只会让人困惑。
-    空串表示"到确认时回退到原始文件名"（需求 §3.1.3 的"未命名"那一条）。
-    前缀拼上去之后的总长度这里管不了（前缀随时会变），留到确认时兜底。
+    name **允许空字符串** —— 用户清空重打的中间态就是空的，那时候弹 400 只会
+    让人困惑。空串表示"到确认时回退到原始文件名"（需求 §3.1.3 的"未命名"）。
+
+    folder_id / tags 用 model_fields_set 区分「没传」和「传了空」：没传 = 不动它，
+    传 null / [] = 改成「不放进文件夹」/「不标孔位」。传一个已经不存在的
+    文件夹 id（别人刚删了那个文件夹）当 null 处理，不报错 —— 手机那边只是选了
+    个过期的值。
+
+    ⚠️ 名字和标签现在是**两件事**了（手机页上一个文本框、三个下拉）。所以改名字
+    时只在「这个名字本身就是个孔位」时才顺手改标签，不像孔位就**别碰**标签 ——
+    见下面的注释。
     """
     if db.get_pending(conn, pid) is None:
         raise HTTPException(404, "这一行已经不在了")
 
-    name = (body.name or "").strip()
-    if name:
-        _validate_name(name)
-    db.set_pending_name(conn, pid, name)
+    if body.name is not None:
+        name = body.name.strip()
+        if name:
+            _validate_name(name)
+        name, tags = _name_and_tags(name)
+        db.set_pending_name(conn, pid, name)
+        # 只有"名字本身就是孔位"时才顺手当标签。不像孔位就只当名字 ——
+        # 不能顺手把已经选好的孔位清掉：用户先选了下拉、再回头改名字，
+        # 结果孔位没了，他只会以为是自己点错了。
+        if _TAG_RE.fullmatch(name):
+            db.set_pending_tags(conn, pid, tags)
+
+    if "tags" in body.model_fields_set:
+        picked = body.tags or []
+        for t in picked:
+            # fullmatch + 同一条正则（`_TAG_RE` 只有一份，别在这里再写一个）：
+            # 存进去一个别的形状，图库那个打标签对话框就拆不回三个下拉了。
+            if not _TAG_RE.fullmatch(t):
+                raise HTTPException(400, f"标签「{t}」不对，应该是 A1-1 这样的")
+        db.set_pending_tags(conn, pid, json.dumps(picked))
+
+    if "folder_id" in body.model_fields_set:
+        fid = body.folder_id
+        if fid is not None and db.get_folder(conn, fid) is None:
+            fid = None
+        db.set_pending_folder(conn, pid, fid)
+
     return _pending_summary(conn, db.get_pending(conn, pid))
 
 
@@ -130,34 +169,31 @@ def remove_pending(pid: int, conn=Depends(get_db)) -> dict:
     return _pending_list(conn)
 
 
-class PrefixIn(BaseModel):
-    prefix: str
+class FolderIn(BaseModel):
+    folder_id: int | None = None
 
 
-@both("put", "/prefix")
-def set_prefix(body: PrefixIn, conn=Depends(get_db)) -> dict:
-    """设统一前缀。传空串 = 清掉。
+@both("put", "/folder")
+def set_folder(body: FolderIn, conn=Depends(get_db)) -> dict:
+    """把列表里**所有行**设成同一个文件夹。传 null = 全部改成「不放进文件夹」。
 
-    改前缀会同时改掉**每一行**的冲突状态，所以整份列表一起返回。
+    和上面的 PATCH 一样：id 不存在（文件夹被删了）当 null，不报错。
+    改完返回整份列表 —— 前端一次重画，每一行都跟着变。
     """
-    prefix = (body.prefix or "").strip()
-    if prefix:
-        if len(prefix) > PREFIX_MAX_LEN:
-            raise HTTPException(400, f"前缀不能超过 {PREFIX_MAX_LEN} 个字")
-        if _BAD_CHARS.search(prefix):
-            raise HTTPException(400, f"前缀里不能有 {storage.BAD_NAME_CHARS} 这些符号")
-    db.set_prefix(conn, prefix)
+    fid = body.folder_id
+    if fid is not None and db.get_folder(conn, fid) is None:
+        fid = None
+    db.set_all_pending_folders(conn, fid)
     return _pending_list(conn)
 
 
 @both("delete", "")
 def cancel_pending(conn=Depends(get_db)) -> dict:
-    """取消导入：列表清空、暂存文件和小图删掉、前缀清空，一张都不入库。"""
+    """取消导入：列表清空、暂存文件和小图删掉，一张都不入库。"""
     n = 0
     for row in db.list_pending(conn):
         _drop(conn, row)
         n += 1
-    db.set_prefix(conn, "")
     return {"cleared": n}
 
 
@@ -199,7 +235,6 @@ def confirm_pending(request: Request, body: ConfirmIn,
         raise HTTPException(400, "在手机上不能覆盖已有的照片，请到电脑上操作")
 
     with _CONFIRM_LOCK:
-        prefix = db.get_prefix(conn)
         overwrite = set(body.overwrite)
         imported = skipped = unnamed = 0
         overwritten: list[str] = []
@@ -214,7 +249,7 @@ def confirm_pending(request: Request, body: ConfirmIn,
             if not row["staged_path"]:
                 # 今天到不了的一行（status='ok' 却没有暂存文件）。真出现了也不能
                 # 掉进 resolve_staged(None) —— 那会抛 TypeError 冲出循环，
-                # 客户端拿到 500、后面的行一行都不处理、前缀也不清。
+                # 客户端拿到 500，后面的行一行都不处理。
                 continue
 
             src = storage.resolve_staged(row["staged_path"])
@@ -229,7 +264,7 @@ def confirm_pending(request: Request, body: ConfirmIn,
                 base = _name_from_file(row["original_filename"])
 
             try:
-                final = _validate_name(prefix + base)
+                final = _validate_name(base)
                 data = src.read_bytes()
                 stored = storage.store_original(data)   # 先落盘 —— 下一步是删东西
             except Exception as e:                      # noqa: BLE001
@@ -251,11 +286,20 @@ def confirm_pending(request: Request, body: ConfirmIn,
                 else:
                     final = _unique_name(conn, final)
 
+                # tags 直接透传：库里存的、images.tags 要的，都是同一个 JSON 字符串
                 new_id = db.create_image(conn, final, row["original_filename"], stored,
-                                         row["import_source"])
+                                         row["import_source"], tags=row["tags"])
+
+                # ⚠️ 先查一下文件夹还在不在：不在的话 set_image_folders 会撞外键
+                # （PRAGMA foreign_keys 是 ON），异常会被下面的 except 抓住 —— 而那时候
+                # 照片**已经建好了**，只会被标红留在列表里，用户再点一次确认就多出一张
+                # 重复的照片。所以这里提前判掉，宁可让它进「未分类」。
+                fid = row["folder_id"]
+                if fid is not None and db.get_folder(conn, fid) is not None:
+                    db.set_image_folders(conn, new_id, [fid])
             except Exception as e:                      # noqa: BLE001
                 # 删旧的和建新的之间没有事务可依：create_image 炸了的话旧的可能已经没了。
-                # 但异常绝不能冲出循环 —— 那会让客户端 500、剩下的行不再处理、前缀也不清。
+                # 但异常绝不能冲出循环 —— 那会让客户端 500、剩下的行不再处理。
                 # 刚落盘的这份原图现在没人引用：留在原图目录里就是个永久孤儿
                 #（界面上看不见、也删不掉，重试还会再写一份），挪进 trash 收拾掉。
                 try:
@@ -263,8 +307,8 @@ def confirm_pending(request: Request, body: ConfirmIn,
                 except Exception:                       # noqa: BLE001
                     # 这里必须吞掉：trash_file 内部是 shutil.move，在 Windows 上对
                     # 一个刚写完的文件它是可能抛的。让它冒出去的话，这个本意是善后的调用
-                    # 反而会触发上面那句注释里要防的后果 —— 客户端 500、剩下的行不处理、
-                    # 前缀不清。清不掉孤儿文件只是多占点磁盘，比比整批导入中断轻得多。
+                    # 反而会触发上面那句注释里要防的后果 —— 客户端 500、剩下的行不处理。
+                    # 清不掉孤儿文件只是多占点磁盘，比整批导入中断轻得多。
                     pass
                 db.set_pending_reason(conn, row["id"], _reason(e))
                 continue
@@ -275,6 +319,5 @@ def confirm_pending(request: Request, body: ConfirmIn,
             _drop(conn, row)
             imported += 1
 
-        db.set_prefix(conn, "")
         return {"imported": imported, "skipped": skipped,
                 "unnamed": unnamed, "overwritten": overwritten}

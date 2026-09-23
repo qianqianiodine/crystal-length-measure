@@ -32,7 +32,7 @@ SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}
 # 接口版本。加/改接口就 +1 —— launch.py 靠它认出"端口上跑的是旧版本"。
 # 不加这个的话，用户双击 启动.bat 会被老进程的 /api/health 骗过去，
 # 页面是新的、接口是旧的，报一堆英文的 "Not Found"。
-API_VERSION = 12
+API_VERSION = 17
 
 
 def ensure_dirs() -> None:

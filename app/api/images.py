@@ -152,12 +152,11 @@ def _conflict(conn, full_name: str) -> dict | None:
 def _pending_summary(conn, row) -> dict:
     """一行待确认条目。形状和画廊里的一张图不同：它还没入库。
 
-    conflict 只在「前缀+名字」和库里的某张完全同名时才有值。
+    conflict 只在这一行的名字和库里的某张完全同名时才有值。
     名字为空的行（等确认时才回退到文件名）和失败的行一律不给冲突 ——
     前者还没定名字，后者根本入不了库，都不该弹警告。
     """
-    base = row["name"].strip()
-    full = (db.get_prefix(conn) + base) if base else ""
+    full = row["name"].strip()
     return {
         "id": row["id"],
         "name": row["name"],
@@ -166,27 +165,35 @@ def _pending_summary(conn, row) -> dict:
         "status": row["status"],
         "reason": row["reason"],
         "import_source": row["import_source"],
+        "folder_id": row["folder_id"],                    # 确认时要放进哪个文件夹
+        "tags": exporter.parse_tags(row["tags"]),         # 名字长得像孔位时才有值
         "conflict": (_conflict(conn, full)
                      if (full and row["status"] == "ok") else None),
     }
 
 
-def _stage_one(conn, filename, data, size, source) -> dict:
+def _stage_one(conn, filename, data, size, source, folder_id=None, tags: str = "[]") -> dict:
     """存进暂存区并记一行。坏图片抛 ValueError（由 _ingest 转成红字行）。"""
     stored = storage.store_staged(data)
     pid = db.add_pending(conn, _name_from_file(filename), filename or "未命名",
-                         size, stored, "ok", "", source)
+                         size, stored, "ok", "", source,
+                         folder_id=folder_id, tags=tags)
     return _pending_summary(conn, db.get_pending(conn, pid))
 
 
-def _stage_failed(conn, filename, size, reason, source) -> dict:
-    """读不出来的文件也占一行 —— 列表里红字写清它为什么没成功。"""
+def _stage_failed(conn, filename, size, reason, source, folder_id=None, tags: str = "[]") -> dict:
+    """读不出来的文件也占一行 —— 列表里红字写清它为什么没成功。
+
+    ⚠️ 失败的行也带上 folder：用户把这一行修好再确认时，它该去原来那个文件夹。
+    """
     pid = db.add_pending(conn, _name_from_file(filename), filename or "未命名",
-                         size, None, "failed", reason, source)
+                         size, None, "failed", reason, source,
+                         folder_id=folder_id, tags=tags)
     return _pending_summary(conn, db.get_pending(conn, pid))
 
 
-async def _ingest(conn, files, *, mode: str, source: str, default_name: str) -> dict:
+async def _ingest(conn, files, *, mode: str, source: str, default_name: str,
+                  folder: int | None = None) -> dict:
     """把一批上传的文件收进来。mode 决定直接入库还是先进待确认列表。
 
     - direct：老行为，逐张入库，坏文件进 failed 数组
@@ -194,9 +201,15 @@ async def _ingest(conn, files, *, mode: str, source: str, default_name: str) -> 
     - auto：这一次就 ≥2 张 → pending，否则 direct。
       电脑端两个页面都是**一个请求带多个文件**，所以服务端数得清；
       手机端一个请求一张，由手机页自己传 mode（见 api/mobile.py）。
+
+    folder 只在 pending 那条路上有意义（direct 直接入库，不进列表）。
+    传了不存在的 id（图库那边的文件夹在扫码之后被删了）当 None，
+    不 400 —— 用户没做错什么，照片进「未分类」就好。
     """
     if mode == "auto":
         mode = "pending" if len(files) >= 2 else "direct"
+    if folder is not None and db.get_folder(conn, folder) is None:
+        folder = None
 
     ok, failed, staged = [], [], []
     for up in files:
@@ -208,14 +221,20 @@ async def _ingest(conn, files, *, mode: str, source: str, default_name: str) -> 
             # 逐个读、逐个存 —— 不要先 read() 成一个列表，那会把整批堆在内存里
             data = await up.read()
             size = len(data)
+            # 手机上只有一个输入框：名字填得像孔位（A1-1）就顺手当成标签。
+            # 不像就只当名字 —— 图库的「标签…」对话框靠 A1-1 这个形状把标签
+            # 拆回三个下拉，存进去别的形状它显示不出来。
+            # ⚠️ 只要标签那一半：这里的名字是**文件名**推出来的，手机上用户
+            # 还没机会改（改了走 PATCH /imports/{pid}，那条路两个都会重算）。
+            _, tags = _name_and_tags(_name_from_file(filename))
             if mode == "pending":
-                staged.append(_stage_one(conn, filename, data, size, source))
+                staged.append(_stage_one(conn, filename, data, size, source, folder, tags))
             else:
                 ok.append(_import_one(conn, filename, data, source))
         except Exception as e:                       # noqa: BLE001 —— 一个坏文件不该中断整批
             reason = _reason(e)
             if mode == "pending":
-                staged.append(_stage_failed(conn, filename, size, reason, source))
+                staged.append(_stage_failed(conn, filename, size, reason, source, folder))
             else:
                 failed.append({"name": filename, "reason": reason})
         finally:
@@ -229,6 +248,7 @@ async def _ingest(conn, files, *, mode: str, source: str, default_name: str) -> 
 @router.post("/images/upload")
 async def upload(files: list[UploadFile] = File(...),
                  mode: str = Query("auto", pattern="^(auto|direct|pending)$"),
+                 folder: int | None = Query(None, ge=0),
                  conn=Depends(get_db)) -> dict:
     """多文件上传。前端把同一个字段名 files 重复提交即可。
 
@@ -236,11 +256,14 @@ async def upload(files: list[UploadFile] = File(...),
     direct = 一律直接入库；pending = 一律进待确认列表。
     拼错的值当场报 422，不能悄悄当成 direct —— 那样用户以为照片进了待确认列表，
     其实已经直接入库了。
+
+    folder：这一批照片要放进哪个文件夹（图库里当时在看的那个）。不带 =
+    进「未分类」。参数名和 GET /api/images?folder= 一致。
     """
     if len(files) > MAX_FILES:
         raise HTTPException(400, f"一次最多传 {MAX_FILES} 张，这次有 {len(files)} 张")
     return await _ingest(conn, files, mode=mode, source="upload",
-                         default_name="未命名")
+                         default_name="未命名", folder=folder)
 
 
 class PasteIn(BaseModel):
@@ -444,9 +467,27 @@ def batch_folders(body: BatchFoldersIn, conn=Depends(get_db)) -> dict:
 _TAG_RE = re.compile(r"^[A-H]([1-9]|1[0-2])-[12]$")
 
 
+def _name_and_tags(name: str) -> tuple[str, str]:
+    """名字像孔位就统一成大写、并顺手当成标签；不像的原样只当名字。
+
+    返回 `(要存的名字, tags 的 JSON 字符串)`。
+
+    ⚠️ `_TAG_RE` 是**唯一**一份孔位正则（图库打标签的接口也用它）——
+    别在这里再写一个，两份迟早分叉。`.upper()` 是因为手机上打小写 `a1-1`
+    很正常，而图库那边的三个下拉只认大写；名字不跟着转的话，
+    同一张照片会变成"名字小写、标签大写"。
+    """
+    s = name.strip()
+    up = s.upper()
+    return (up, json.dumps([up])) if _TAG_RE.fullmatch(up) else (s, "[]")
+
+
 class TagItem(BaseModel):
     id: int
     tags: list[str] = []
+    # 打标签对话框里的「编号」：前端拼好的新名字（编号-行-列-孔，如 20260923-29-B-5-1）。
+    # 空串 = **不改名字** —— 用 "" 而不是 None，前端少一个分支。
+    name: str = ""
 
 
 class BatchTagsIn(BaseModel):
@@ -455,26 +496,40 @@ class BatchTagsIn(BaseModel):
 
 @router.post("/images/batch-tags")
 def batch_tags(body: BatchTagsIn, conn=Depends(get_db)) -> dict:
-    """一次给若干张照片写标签。不存在的 id 静默跳过（别人刚删掉）。
+    """一次给若干张照片写标签，可以顺手把名字一起改。不存在的 id 静默跳过（别人刚删掉）。
 
     单张那个入口和图库批量共用这一个端点 —— 单张就是只有一行的批量。
     ⚠️ `PATCH /api/images/{id}` **不动**：扩了它也没有调用方，是没人用的代码。
+
+    名字跟着标签一起走是有意的：打标签对话框一次能标 30 行，每行再补一个 PATCH
+    就是 30 次往返，中途断了会留下"名字改了一半"的状态。
     """
     if not body.items:
         raise HTTPException(400, "没有要打标签的照片")
 
+    # 先验**全部**，再写（名字和标签一个规矩）。一验一写的话，用户看到 400 以为
+    # 整批没生效，其实前几张已经被悄悄改掉了。
+    names: dict[int, str] = {}
     for it in body.items:
         for t in it.tags:
             # fullmatch，不是 match：`$` 也匹配结尾换行，match("A1-1\n") 会放行，
             # 那个尾巴会一路带到导出文件名上（_safe_segment 认不出，整段退回「未命名」）。
             if not _TAG_RE.fullmatch(t):
                 raise HTTPException(400, f"标签「{t}」不对，应该是 A1-1 这样的")
+        if it.name:
+            names[it.id] = _validate_name(it.name)
 
     updated = 0
     for it in body.items:
         if db.get_image(conn, it.id) is None:
             continue
-        db.update_image(conn, it.id, tags=json.dumps(it.tags))
+        fields = {"tags": json.dumps(it.tags)}
+        if it.id in names:
+            # 和单张改名、和导入走同一条规矩：撞名加 " (2)"。
+            # ⚠️ 必须在**循环里**现算，不能提前一把算完 —— 同一批里两行撞名时，
+            #    前一行已经写进库了，后一行才算得出它该加后缀。
+            fields["name"] = _unique_name(conn, names[it.id])
+        db.update_image(conn, it.id, **fields)
         updated += 1
     return {"updated": updated}
 

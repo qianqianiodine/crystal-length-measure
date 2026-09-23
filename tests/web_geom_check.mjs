@@ -73,8 +73,9 @@ globalThis.URL = { createObjectURL: () => 'blob:x', revokeObjectURL() {} };
 globalThis.fetch = async () => ({ ok: true, json: async () => ({}), headers: { get: () => null } });
 
 const factory = new Function(js + `
-  return { S, renderExport, exportRegion, scaleBarInfo, scaleBarGeom,
-           uz: n => n * UIZ, labelScreen, focusCropForLine };
+  return { S, render, renderExport, exportRegion, scaleBarInfo, scaleBarGeom,
+           uz: n => n * UIZ, labelScreen, focusCropForLine,
+           setFontPx: n => { FONT_PX = n; } };
 `);
 const app = factory();
 
@@ -85,6 +86,9 @@ app.S.umpp = 7.768;
 app.S.lines = [{ id: 1, seq: 1, x1: 400, y1: 600, x2: 460, y2: 620,
                  measured_um: 1000, color: '#FF2D55', note: '', label_dx: 0, label_dy: 0 }];
 app.S.view = { s: 0.5, tx: 100, ty: 50 };
+// "整张照片铺满屏幕"那个缩放。导出图里的字号/线宽按**它**算，不按当前缩放 ——
+// 见下面「导出的大小不跟着缩放变」那段。
+app.S.fit = 0.5;
 
 let fails = 0;
 const check = (name, ok, detail = '') => {
@@ -138,6 +142,86 @@ const fc = app.focusCropForLine(app.S.lines[0]);
 check('聚焦裁剪框包含整条线且有边距',
       fc.x0 <= 400 && fc.x1 >= 460 && fc.y0 <= 600 && fc.y1 >= 620 &&
       fc.x1 - fc.x0 > 60);
+
+// ---------- 字号：屏幕、导出、以及"缩放不该影响它" ----------
+const REGION = { x0: 300, y0: 400, x1: 700, y1: 700 };
+const drawn = (tag, prop) =>
+  [...new Set(calls.filter(c => c[0] === tag && c[1] === prop).map(c => c[2]))];
+
+// —— 屏幕上的字号/线宽**不随缩放变** ——
+// 它们画的是固定的屏幕像素（uz() 在屏幕上恒等于 1），所以放大到 5 倍看细节时
+// 线不会变粗、数字不会变大。这条以前就是这样，钉住别被改坏。
+{
+  const shapes = [];
+  for (const zoom of [0.25, 1, 5]) {
+    app.S.view = { s: zoom, tx: 0, ty: 0 };
+    calls.length = 0;
+    app.render();
+    shapes.push(JSON.stringify({ f: drawn('off', 'font'), lw: drawn('off', 'lineWidth') }));
+  }
+  check('屏幕上：缩放到哪一档，字号和线宽都不变',
+        shapes.every(x => x === shapes[0]),
+        shapes[0] === shapes[1] && shapes[1] === shapes[2] ? '' : shapes.join(' | '));
+}
+
+// —— 导出图里的大小也**不随缩放变** ——
+// 用户 2026-09-23 报的：放大着看晶体、调完线再导出，图上的字和线就变小了。
+// 因为导出当时是按"屏幕上 1px 在导出图里占 sup/当前缩放 个像素"算的 ——
+// 当前缩放一变，整张图的字号线宽全跟着变，同一张图导两次都不一样。
+// 改成只认 S.fit（整张照片铺满屏幕那个比例）：跟你在哪个缩放上按的导出无关。
+{
+  const shots = [];
+  for (const zoom of [0.25, 1, 5]) {
+    app.S.view = { s: zoom, tx: 0, ty: 0 };
+    calls.length = 0;
+    app.renderExport(REGION, 2);
+    shots.push(JSON.stringify({ f: drawn('off', 'font'), lw: drawn('off', 'lineWidth') }));
+  }
+  check('导出：缩放到哪一档，导出的字号和线宽都一样',
+        shots.every(x => x === shots[0]),
+        shots[0] === shots[1] && shots[1] === shots[2] ? '' : shots.join(' | '));
+}
+
+// —— 那个字号滑块真的同时管着长度数字和标尺字 ——
+// 用户要的是"比例尺字和标注字体共用一个字号"。两处都走 labelFont()，
+// 所以改 FONT_PX 两边一起变（这里比的是导出图，两个值都得在）。
+{
+  const at = n => {
+    app.setFontPx(n);
+    app.S.view = { s: 0.5, tx: 0, ty: 0 };
+    calls.length = 0;
+    app.renderExport(REGION, 2);
+    return drawn('off', 'font');
+  };
+  const f16 = at(16), f30 = at(30);
+  // ⚠️ 每次导出列表里都有**两个**值：导出那一次画的，加上 renderExport 收尾时
+  //    把屏幕重画一遍用的那个（屏幕上是原始 FONT_PX，没有乘 UIZ）。导出在前。
+  //    UIZ = 2 / 0.5 = 4 → 16px 的字在导出图里是 64px，30px 的是 120px。
+  check('字号 16 → 导出图里的字是 64px（屏幕重画那次是 16px）',
+        JSON.stringify(f16) === '["600 64px Consolas","600 16px Consolas"]', JSON.stringify(f16));
+  check('字号 30 → 导出图里的字是 120px（屏幕重画那次是 30px）',
+        JSON.stringify(f30) === '["600 120px Consolas","600 30px Consolas"]', JSON.stringify(f30));
+  // 正好两种 = 导出那一次只用了**一个**字号（长度数字和标尺字同号）。
+  // 两处各写各的话，这里会冒出第三种。
+  check('长度数字和标尺字共用同一个字号',
+        f16.length === 2 && f30.length === 2, `${f16.length} / ${f30.length} 种`);
+  app.setFontPx(16);
+}
+
+// —— 标签的抬升量跟着字号走 ——
+// 写死 20 的话，字号调到 30 时文字会压在线条上（还被深色描边吃掉半个字）。
+{
+  const lift = n => {
+    app.setFontPx(n);
+    app.S.view = { s: 1, tx: 0, ty: 0 };
+    // 那条线的中点屏幕纵坐标是 (600+620)/2 = 610
+    return 610 - app.labelScreen(app.S.lines[0])[1];
+  };
+  const l16 = lift(16), l32 = lift(32);
+  check('字号翻倍，标签往上抬的距离也翻倍',
+        Math.abs(l16 - 20) < 1e-6 && Math.abs(l32 - 40) < 1e-6, `${l16} / ${l32}`);
+  app.setFontPx(16);
+}
 
 console.log(fails ? `\n失败 ${fails} 项` : '\n全部通过');
 process.exit(fails ? 1 : 0);

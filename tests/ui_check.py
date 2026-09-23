@@ -264,7 +264,16 @@ with sync_playwright() as pw:
 
     pg.select_option("#exCrop", "focus:1")
     pg.select_option("#exSuper", "1")
-    pg.check("#exNotes")
+    # 图上字号滑块（2026-09-23 顶掉原来那两个勾选框的）。真浏览器里拖一下：
+    # 旁边那个数字和 FONT_PX 都得跟着走 —— 下面这次导出顺便就是"非默认字号下也能导"。
+    # （"导出的大小不跟着屏幕缩放变"那几条在 tests/web_geom_check.mjs 里，那边能
+    #   把导出绘制的每一次 lineWidth / font 都记下来比。）
+    pg.evaluate("() => { const el = document.getElementById('exFont');"
+                " el.value = '24'; el.dispatchEvent(new Event('input')); }")
+    check("字号滑块能改图上字号，旁边数字跟着变",
+          pg.evaluate("() => FONT_PX") == 24
+          and pg.evaluate("() => document.getElementById('exFontV').textContent") == "24",
+          f"FONT_PX={pg.evaluate('() => FONT_PX')}")
     d = grab("#btnExportPng")
     im2 = Image.open(pathlib.Path(d.path()))
     check("聚焦裁剪后明显变小", im2.size[0] < im.size[0] and im2.size[1] < im.size[1],
