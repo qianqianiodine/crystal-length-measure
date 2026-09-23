@@ -75,7 +75,9 @@ globalThis.fetch = async () => ({ ok: true, json: async () => ({}), headers: { g
 const factory = new Function(js + `
   return { S, render, renderExport, exportRegion, scaleBarInfo, scaleBarGeom,
            uz: n => n * UIZ, labelScreen, focusCropForLine,
-           setFontPx: n => { FONT_PX = n; } };
+           setFontPx: n => { FONT_PX = n; },
+           setCW: (w, h) => { CW = w; CH = h; SW = w; SH = h; },
+           fitView, fitFullScale, fitScaleFor, exportSup };
 `);
 const app = factory();
 
@@ -86,9 +88,11 @@ app.S.umpp = 7.768;
 app.S.lines = [{ id: 1, seq: 1, x1: 400, y1: 600, x2: 460, y2: 620,
                  measured_um: 1000, color: '#FF2D55', note: '', label_dx: 0, label_dy: 0 }];
 app.S.view = { s: 0.5, tx: 100, ty: 50 };
-// "整张照片铺满屏幕"那个缩放。导出图里的字号/线宽按**它**算，不按当前缩放 ——
-// 见下面「导出的大小不跟着缩放变」那段。
-app.S.fit = 0.5;
+// 导出图里的字号/线宽按"**整张照片**铺满屏幕"那个比例算，不按当前缩放、也不按裁剪区
+// —— 见下面「导出的大小不跟着缩放变」那几段。它由 fitFullScale(CW, CH) 当场算出来。
+// 屏幕画布设成 940×668：整张照片 960×1280 铺满它正好是 0.5，
+// 于是下面断言里的数字（64px / 120px / 4 倍线宽…）还是原来那些。
+app.setCW(940, 668);
 
 let fails = 0;
 const check = (name, ok, detail = '') => {
@@ -148,20 +152,43 @@ const REGION = { x0: 300, y0: 400, x1: 700, y1: 700 };
 const drawn = (tag, prop) =>
   [...new Set(calls.filter(c => c[0] === tag && c[1] === prop).map(c => c[2]))];
 
-// —— 屏幕上的字号/线宽**不随缩放变** ——
-// 它们画的是固定的屏幕像素（uz() 在屏幕上恒等于 1），所以放大到 5 倍看细节时
-// 线不会变粗、数字不会变大。这条以前就是这样，钉住别被改坏。
+// —— 屏幕上的字和线**跟着照片一起缩放**（它们是"照片的一部分"）——
+// 用户 2026-09-23 的原话：「应该成为我图片的一部分」。放大照片时字也变大、
+// 缩小也变小，字相对**照片**的大小恒定不变。
+// ⚠️ 以前这里是反的（钉成固定屏幕像素，uz() 在屏幕上恒等于 1）—— 那样照片一缩小，
+// 字相对照片就显得又大又糙，用户说"画质变差了"。别改回去。
 {
-  const shapes = [];
+  const px = [];
   for (const zoom of [0.25, 1, 5]) {
     app.S.view = { s: zoom, tx: 0, ty: 0 };
     calls.length = 0;
     app.render();
-    shapes.push(JSON.stringify({ f: drawn('off', 'font'), lw: drawn('off', 'lineWidth') }));
+    const m = String(drawn('off', 'font')[0]).match(/([\d.]+)px/);
+    px.push(m ? parseFloat(m[1]) : NaN);
   }
-  check('屏幕上：缩放到哪一档，字号和线宽都不变',
-        shapes.every(x => x === shapes[0]),
-        shapes[0] === shapes[1] && shapes[1] === shapes[2] ? '' : shapes.join(' | '));
+  // 基准 fitFullScale(940, 668) = 0.5 → UIZ = zoom/0.5 = 2·zoom → 字号 16×2·zoom
+  check('屏幕上的字跟着照片一起缩放', px.join('/') === '8/32/160', px.join(' / '));
+  check('字号和缩放严格成正比（字相对照片恒定）',
+        Math.abs(px[0] / 0.25 - px[1]) < 1e-9 && Math.abs(px[1] - px[2] / 5) < 1e-9,
+        px.join(' / '));
+}
+
+// —— 导出图 = 屏幕上那个样子的放大版（所见即所得）——
+// 这是整套换算唯一的目的：屏幕上字相对照片多大，导出图里就得多大。
+// 屏幕和导出共用 render() 里那一行 UIZ = S.view.s / fitFullScale()，
+// 区别只是导出时 S.view.s 被换成了 sup。
+{
+  const WHOLE = { x0: 0, y0: 0, x1: 960, y1: 1280 };
+  const zoom = 0.31;
+  app.S.view = { s: zoom, tx: 0, ty: 0 };
+  calls.length = 0; app.render();
+  const onScreen = parseFloat(String(drawn('off', 'font')[0]).match(/([\d.]+)px/)[1]);
+  calls.length = 0; app.renderExport(WHOLE, 2);
+  const inExport = parseFloat(String(drawn('off', 'font')[0]).match(/([\d.]+)px/)[1]);
+  // "字相对照片" = 字号 ÷ 照片在这张画布上占的宽度
+  const a = onScreen / (960 * zoom), b = inExport / (960 * 2);
+  check('导出和屏幕上看到的一样（字相对照片的比例一致）',
+        Math.abs(a - b) < 1e-9, `${a} vs ${b}`);
 }
 
 // —— 导出图里的大小也**不随缩放变** ——
@@ -175,7 +202,10 @@ const drawn = (tag, prop) =>
     app.S.view = { s: zoom, tx: 0, ty: 0 };
     calls.length = 0;
     app.renderExport(REGION, 2);
-    shots.push(JSON.stringify({ f: drawn('off', 'font'), lw: drawn('off', 'lineWidth') }));
+    // ⚠️ 只比**导出那一次**（排在最前）：renderExport 收尾会把屏幕重画一遍，
+    // 而屏幕上的字现在是跟着缩放走的，混进来三次就一定不一样。
+    shots.push(JSON.stringify({ f: drawn('off', 'font')[0],
+                                lw: drawn('off', 'lineWidth')[0] }));
   }
   check('导出：缩放到哪一档，导出的字号和线宽都一样',
         shots.every(x => x === shots[0]),
@@ -221,6 +251,109 @@ const drawn = (tag, prop) =>
   check('字号翻倍，标签往上抬的距离也翻倍',
         Math.abs(l16 - 20) < 1e-6 && Math.abs(l32 - 40) < 1e-6, `${l16} / ${l32}`);
   app.setFontPx(16);
+}
+
+// —— 裁剪不能改变导出图里的字号 ——
+// 用户 2026-09-23 报的：框一小块再导出，图上的字比整图导出时小一截，
+// 而且框得越小、字越小。
+// 根因：导出字号的分母是 S.fit，而 S.fit 是 fitView() 按 viewRegion() 算的；
+// viewRegion() 在**有裁剪**时返回的是裁剪区 —— 框得越小，S.fit 越大，
+// UIZ = sup / S.fit 越小，字就越小。它本该是"整张照片铺满屏幕"那个比例，
+// 跟框了多大无关。
+{
+  app.setCW(940, 854);
+  // 导出图里"字相对照片"有多大 = 字号 ÷ sup（照片在导出图里就是 ×sup）。
+  // 两次用同一个 sup，所以比字号就行。
+  const fontPxAt = crop => {
+    app.S.crop = crop;
+    app.fitView();                 // 框选前后页面都会重新 fit 一次
+    app.S.view = { s: app.S.view.s, tx: 0, ty: 0 };
+    calls.length = 0;
+    app.renderExport(crop || { x0: 0, y0: 0, x1: app.S.W, y1: app.S.H }, 2);
+    const m = String(drawn('off', 'font')[0]).match(/([\d.]+)px/);   // "600 64px Consolas"
+    return m ? parseFloat(m[1]) : NaN;                              // 导出那一次排在前面
+  };
+  const whole = fontPxAt(null);
+  const piece = fontPxAt({ x0: 400, y0: 560, x1: 560, y1: 720 });    // 160×160 一小块
+  check('框一小块导出，字号跟整图导出一样',
+        Math.abs(whole - piece) < 1e-6, `整图 ${whole}px vs 裁剪 ${piece}px`);
+}
+
+// —— 一次 fitView() 都没调过时，导出也不能跟着滚轮走 ——
+// **这就是用户 2026-09-23 真正踩的那条路**：刷新页面回到上次那张照片时，
+// openPhoto 走的是「恢复上次的缩放」那一支（v && v.s > 0 → 直接赋 S.view），
+// **根本不调 fitView()** —— 于是"整张照片铺满屏幕"那个基准压根没被算过，
+// 公式只好回退到当前缩放，导出的字号和线宽就跟着滚轮变了。
+// 放大着看晶体再导出 → 字和线变小变细（用户原话："画质都变差了"）。
+// 所以基准必须**现算**，不能存着用。
+{
+  const fresh = factory();          // 全新的页面：没打开过照片，更没调过 fitView()
+  fresh.setCW(940, 854);
+  fresh.S.imageId = 1; fresh.S.name = '样品2_1'; fresh.S.W = 960; fresh.S.H = 1280;
+  fresh.S.circle = { cx: 480, cy: 640, a: 200, b: 200, th: 0 };
+  fresh.S.umpp = 7.768;
+  fresh.S.lines = [{ id: 1, seq: 1, x1: 400, y1: 600, x2: 460, y2: 620,
+                     measured_um: 1000, color: '#FF2D55', note: '',
+                     label_dx: 0, label_dy: 0 }];
+
+  const shots = [];
+  for (const zoom of [0.25, 1, 5]) {
+    fresh.S.view = { s: zoom, tx: 0, ty: 0 };
+    calls.length = 0;
+    fresh.renderExport({ x0: 0, y0: 0, x1: 960, y1: 1280 }, 2);
+    shots.push(String(drawn('off', 'font')[0]));
+  }
+  check('刷新恢复的那种（从没 fitView 过）：导出也不随缩放变',
+        shots.every(x => x === shots[0]), shots.join(' | '));
+}
+
+// —— 一块区域铺满屏幕的比例：全项目只有 fitScaleFor() 算它 ——
+// fitView()（定视图）、导出（字号基准）、恢复缩放（补 S.fit）三处都用它，
+// 所以它对了三处都对；分开各写一份的话，早晚有一处跟另外两处对不上。
+{
+  const WHOLE = { x0: 0, y0: 0, x1: 960, y1: 1280 };
+  app.setCW(940, 668);
+  check('整张照片装进 940×668 = 0.5',
+        Math.abs(app.fitScaleFor(WHOLE, 940, 668) - 0.5) < 1e-9,
+        String(app.fitScaleFor(WHOLE, 940, 668)));
+  check('框得越小，这个比例越大（裁剪区铺满屏幕要放得更大）',
+        app.fitScaleFor({ x0: 400, y0: 560, x1: 560, y1: 720 }, 940, 668) > 0.5);
+  check('画布尺寸或区域还没量出来时给 0，让调用方去回退',
+        app.fitScaleFor(WHOLE, 0, 0) === 0 && app.fitScaleFor(WHOLE, 940, 0) === 0);
+  check('导出基准永远按整张照片，跟框了多大无关',
+        app.fitFullScale() === app.fitScaleFor(WHOLE, 940, 668));
+}
+
+// —— 恢复上次缩放那条支路，必须自己补上 S.fit ——
+// 它不经过 fitView()，而缩放上下限的基准只有 fitView() 会设。少了它，
+// 滚轮就没有范围限制（`S.view.s = S.fit ? 夹住 : 不夹`），用户滚几下能把照片甩丢。
+// 这条支路要跑 openPhoto（异步，还得等图片 onload），假 DOM 里跑不通，
+// 所以只能像 web_behavior_check 数 pFlushNames 那样钉住源码。
+{
+  const at = html.indexOf('const v = restore && restore.view');
+  const seg = at < 0 ? '' : html.slice(at, at + 500);
+  check('恢复缩放的支路补了 S.fit', /S\.fit\s*=\s*fitScaleFor\(/.test(seg),
+        at < 0 ? '没找到那段代码' : seg.split('\n')[1].trim());
+}
+
+// —— 输出倍率：装不下就降档，别让用户吃红字 ——
+// 默认 4× 是为了标注和照片都清楚（倍率越高，字和线占的像素越多），
+// 但整张手机照片按 4× 是上亿像素，浏览器画布吃不下。
+// 直接弹红字拒绝的话，用户只会觉得"这工具导不出图"—— 他其实只是想要一张清楚的图。
+{
+  const MAX = 40_000_000;                       // 和 measure.html 里那个上限一样
+  const PHONE = { x0: 0, y0: 0, x1: 4000, y1: 3000 };   // 一张典型手机照片
+  const s4 = app.exportSup(PHONE, 4);
+  check('整张手机照片按 4× 装不下 → 自动降档', s4 > 1 && s4 < 4, `降到 ${s4}×`);
+  check('降档之后确实装得下',
+        PHONE.x1 * PHONE.y1 * s4 * s4 <= MAX,
+        `${Math.round(PHONE.x1 * PHONE.y1 * s4 * s4 / 1e6)} 百万像素`);
+  check('框选一小块时 4× 装得下，就不动用户选的倍率',
+        app.exportSup({ x0: 0, y0: 0, x1: 600, y1: 400 }, 4) === 4);
+  check('连 1× 都装不下就返回 0，让调用方去请用户框小一点',
+        app.exportSup({ x0: 0, y0: 0, x1: 9000, y1: 9000 }, 4) === 0);
+  check('用户本来选 1× 时，装得下就老老实实用 1×',
+        app.exportSup(PHONE, 1) === 1);
 }
 
 console.log(fails ? `\n失败 ${fails} 项` : '\n全部通过');

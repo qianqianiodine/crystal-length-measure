@@ -353,8 +353,8 @@ body.dragging #drop { display: flex; }
       <div class="field"><label for="exSuper">输出倍率</label>
         <select id="exSuper">
           <option value="1">1×（原尺寸）</option>
-          <option value="2" selected>2×（推荐）</option>
-          <option value="4">4×</option>
+          <option value="2">2×</option>
+          <option value="4" selected>4×（推荐）</option>
         </select>
       </div>
       <div class="slider">
@@ -439,6 +439,9 @@ const stage = document.getElementById('stage');
 const $ = id => document.getElementById(id);
 
 let CW = 0, CH = 0, dpr = 1;
+// 屏幕画布的尺寸。导出时会临时把 CW/CH 换成导出尺寸，但 SW/SH 不动 ——
+// 「整张照片铺满屏幕」那个基准必须拿**屏幕**尺寸算，用导出尺寸算就全错了。
+let SW = 0, SH = 0;
 
 // ---------- 导出时的放大 ----------
 // 用户的原话：「我框选这个区域就是你导出的画面」。所以导出**不另写一套渲染**，
@@ -446,9 +449,12 @@ let CW = 0, CH = 0, dpr = 1;
 // 不存在"两套渲染对不上"这回事（之前就是这么错的：颜色、字体、线宽、刻度形状
 // 一路修了四轮还是对不上）。
 //
-// UIZ = 界面放大倍数。屏幕上 1 像素，在导出图里占 UIZ 个像素。
-// 所有**画出来**的尺寸（线宽、字号、抬升、刻度）都要过 uz()；
-// 而**点得到吗**的判定半径（HANDLE_R / CROP_R）不用 —— 那是鼠标的事。
+// UIZ = 照片当前的放大倍数（相对于"整张照片铺满屏幕"那个比例）。
+// 凡是**画出来**的尺寸（线宽、字号、抬升、刻度）都要过 uz() —— 它们是
+// **照片的一部分**：照片放大字就跟着放大，照片缩小字就跟着缩小。
+// render() 每次开头重算一次，所以屏幕上和导出时自动是同一套换算。
+// 而**点得到吗**的判定半径（HANDLE_R / CROP_R）不用 —— 那是鼠标的事，
+// 得按屏幕像素算，不然照片一缩小那些把手就点不着了。
 let UIZ = 1;
 const uz = n => n * UIZ;
 let EXPORTING = false;   // 导出中：不画基准圆、不画框选遮罩
@@ -469,6 +475,7 @@ function resize() {
   const r = stage.getBoundingClientRect();
   CW = Math.max(1, Math.floor(r.width));
   CH = Math.max(1, Math.floor(r.height));
+  SW = CW; SH = CH;
   cv.width = Math.floor(CW * dpr);
   cv.height = Math.floor(CH * dpr);
   cv.style.width = CW + 'px';
@@ -477,12 +484,28 @@ function resize() {
 }
 window.addEventListener('resize', resize);
 
+// 一块区域铺满屏幕的比例（四周各留 28px）。全项目只有这一个地方算这个数。
+function fitScaleFor(r, cw, ch) {
+  if (!(cw > 0) || !(ch > 0)) return 0;            // 画布尺寸还没量出来
+  const w = r.x1 - r.x0, h = r.y1 - r.y0;
+  if (!(w > 0) || !(h > 0)) return 0;
+  return Math.max(0, Math.min((cw - 28) / w, (ch - 28) / h));
+}
+
+// 整张照片铺满屏幕的比例 —— 字号/线宽换算的基准（屏幕和导出共用这一个）。
+// ⚠️ 必须**现算**，不能当状态存着用：刷新页面回到上次那张照片时，openPhoto 走的是
+// 「恢复上次的缩放」那一支，**根本不调 fitView()** —— 存的那份压根没被算过，
+// 公式只好回退到当前缩放，字和线就跟着滚轮变了（实测差 20 倍）。
+// ⚠️ 用 SW/SH（屏幕尺寸），不能用 CW/CH —— 导出时那两个已经被换成导出尺寸了。
+function fitFullScale() {
+  return S.W ? fitScaleFor({ x0: 0, y0: 0, x1: S.W, y1: S.H }, SW, SH) : 0;
+}
+
 function fitView() {
   if (!S.W) return;
   const r = viewRegion();
   const w = r.x1 - r.x0, h = r.y1 - r.y0;
-  const pad = 28;
-  const s = Math.min((CW - pad) / w, (CH - pad) / h);
+  const s = fitScaleFor(r, CW, CH);
   S.view.s = s > 0 ? s : 1;
   S.fit = S.view.s;                       // 缩放的上下限以它为基准
   S.view.tx = (CW - w * S.view.s) / 2 - r.x0 * S.view.s;
@@ -537,6 +560,14 @@ function viewRegion() {
 function render() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, CW, CH);
+
+  // 画出来的东西（字号、线宽、抬升、刻度）是**照片的一部分**，要跟着照片一起缩放：
+  // 放大照片时字也变大，缩小也变小。用户 2026-09-23 的原话：「应该成为我图片的一部分」。
+  // 钉成固定屏幕像素的话，照片一缩小，字相对照片就显得又大又糙（他说"画质变差了"）。
+  // ⚠️ 导出时 S.view.s 已经被换成 sup，同一个公式自然算出导出图里的字号 ——
+  // 导出图 = 屏幕上那个样子的放大版（所见即所得），不需要另写一套换算。
+  const base = fitFullScale();
+  UIZ = base > 0 && S.view.s > 0 ? S.view.s / base : 1;
 
   if (S.W) {
     const r = viewRegion();
@@ -1835,6 +1866,18 @@ function exportRegion() {
 
 const MAX_EXPORT_PIXELS = 40_000_000;    // 再大浏览器画布就吃不消了
 
+// 挑这次导出**真正**用的倍率：装得下就用用户选的那个，装不下就降到装得下的最大倍率。
+// 返回 0 = 这块连 1× 都装不下（本身就超过上限），得请用户先去框小一点。
+// 「输出倍率」默认 4× 是为了标注和照片都够清楚（倍率越高，字和线占的像素越多），
+// 但整张手机照片按 4× 是上亿像素，浏览器画布吃不下 —— 这里必须兜住。
+function exportSup(region, picked) {
+  const area = (region.x1 - region.x0) * (region.y1 - region.y0);
+  if (area * picked * picked <= MAX_EXPORT_PIXELS) return picked;
+  // 留一位小数，别贴着上限（贴着容易被取整顶出去）
+  const sup = Math.max(1, Math.floor(Math.sqrt(MAX_EXPORT_PIXELS / area) * 10) / 10);
+  return area * sup * sup <= MAX_EXPORT_PIXELS ? sup : 0;
+}
+
 // ★ 导出 = 把框选那块按同一套画法重画一遍。
 // 不另写渲染，就不会出现"导出和页面对不上"。
 function renderExport(region, sup) {
@@ -1844,27 +1887,25 @@ function renderExport(region, sup) {
   off.width = w; off.height = h;
 
   const keep = { ctx, CW, CH, dpr, s: S.view.s, tx: S.view.tx, ty: S.view.ty,
-                 uiz: UIZ, exporting: EXPORTING, ew: EXPORT_W };
+                 exporting: EXPORTING, ew: EXPORT_W };
   try {
     ctx = off.getContext('2d');
     CW = w; CH = h;
     dpr = 1;                       // 离屏画布已经是目标像素，不用再乘设备像素比
     EXPORTING = true;
     EXPORT_W = region.x1 - region.x0;
-    // 屏幕上 1px → 导出图里多少个像素。
-    // ⚠️ 分母是 **S.fit**（整张照片铺满屏幕那个比例），**不是** keep.s（当前缩放）。
-    // 用当前缩放的话，同一张图"放大着看好细节再导出"就会得到一个字更小、线更细的
-    // 图 —— 缩放 0.25 和缩放 5 导出的字号能差 20 倍，导两次都不一样（实测）。
-    // 用户 2026-09-23 报的就是这个。以 S.fit 为准 = "导出图 = 你把照片铺满屏幕时
-    // 看到的样子"，跟你当时缩放到哪一档无关。
-    UIZ = sup / (S.fit || keep.s);
+    // ⚠️ 这里**不用**算 UIZ：render() 开头会按 S.view.s / fitFullScale() 算。
+    // 只要把 S.view.s 换成导出倍率，字号和线宽就跟照片一起放大到导出尺寸，
+    // 用的还是屏幕上那套比例 —— 导出图 = 屏幕上那个样子的放大版。
+    // （fitFullScale() 用的是 SW/SH = 屏幕尺寸，导出时不受影响。）
     S.view.s = sup;                // 原图坐标 → 离屏像素
     S.view.tx = -region.x0 * sup;
     S.view.ty = -region.y0 * sup;
     render();
   } finally {
     ctx = keep.ctx; CW = keep.CW; CH = keep.CH; dpr = keep.dpr;
-    UIZ = keep.uiz; EXPORTING = keep.exporting; EXPORT_W = keep.ew;
+    EXPORTING = keep.exporting; EXPORT_W = keep.ew;   // UIZ 由下面那次 render() 重算
+
     S.view.s = keep.s; S.view.tx = keep.tx; S.view.ty = keep.ty;
     render();                      // 把屏幕上的画面恢复原样
   }
@@ -1883,12 +1924,15 @@ function downloadBlob(blob, name) {
 async function exportPng() {
   if (!S.imageId) return;
   const btn = $('btnExportPng');
-  const sup = Number($('exSuper').value);
   const region = exportRegion();
-  const px = (region.x1 - region.x0) * sup * (region.y1 - region.y0) * sup;
-  if (px > MAX_EXPORT_PIXELS) {
-    setStatus(`导出的图太大（${Math.round(px / 1e6)} 百万像素）。`
-              + '请降低倍率，或先用框选裁小一点。', true);
+  // 装不下就自动降档（见 exportSup），并在状态栏说清实际用了多少 ——
+  // 直接弹红字拒绝的话，用户只会觉得"这工具导不出图"。
+  const picked = Number($('exSuper').value);
+  const sup = exportSup(region, picked);
+  if (!sup) {
+    const area = (region.x1 - region.x0) * (region.y1 - region.y0);
+    setStatus(`这块太大了（${Math.round(area / 1e6)} 百万像素），`
+              + '请先用框选裁小一点再导出。', true);
     return;
   }
 
@@ -1900,7 +1944,8 @@ async function exportPng() {
     const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
     if (!blob) throw new Error('浏览器没能生成图片，可能是图太大了');
     downloadBlob(blob, `${S.name}_标注.png`);
-    setStatus(`导出好了：${canvas.width} × ${canvas.height} 像素`);
+    setStatus((sup < picked ? `这张按 ${picked}× 太大，改用 ${sup}×：` : '导出好了：')
+              + `${canvas.width} × ${canvas.height} 像素`);
   } catch (err) {
     setStatus(err.message, true);
   } finally {
@@ -2069,9 +2114,11 @@ function saveSession() {
   try {
     localStorage.setItem(SESSION_KEY, JSON.stringify({
       imageId: S.imageId, view: S.view, cropMode,
-      ex: {
-        scale: $('exScale').value, supersample: $('exSuper').value,
-      },
+      // ⚠️ 「输出倍率」**故意不存**（2026-09-23 去掉的）：它是"这次要导多清楚"的
+      // 选择，不是要保住的工作状态。而且一旦记住，以后把默认值调高对老用户就
+      // 永远不生效 —— 那位用户正好被记住的 1× 卡着，导出一直是糊的。
+      // 「标尺位置」跟着照片走，留着。
+      ex: { scale: $('exScale').value },
     }));
   } catch { /* 存不下就算了，不该因此让页面出问题 */ }
 }
@@ -2093,7 +2140,8 @@ function clearSession() {
   try { localStorage.removeItem(SESSION_KEY); } catch {}
 }
 
-for (const id of ['exCrop', 'exSuper']) $(id).addEventListener('change', scheduleSave);
+// exSuper（输出倍率）不在这个列表里 —— 它已经不跟着 session 存了，见 saveSession()
+for (const id of ['exCrop']) $(id).addEventListener('change', scheduleSave);
 
 // ---------- 打开照片 ----------
 // restore 有值 = 这是刷新后的恢复，要连缩放/框选/面板一起还原。
@@ -2136,7 +2184,7 @@ async function openPhoto(id, restore) {
       if (cropMode) cropUndo = S.crop ? { ...S.crop } : null;
       const ex = restore.ex || {};
       if (ex.scale) $('exScale').value = ex.scale;
-      if (ex.supersample) $('exSuper').value = ex.supersample;
+      // 「输出倍率」不恢复 —— 见 saveSession() 里的说明，老 session 里那个字段忽略掉
     } else {
       cropMode = false;              // 换了照片，别把上一张的调框状态带过来
     }
@@ -2149,8 +2197,13 @@ async function openPhoto(id, restore) {
 
     // 缩放/平移的恢复必须等图片加载完 —— fitView() 得先知道图片多大
     const v = restore && restore.view;
-    if (v && v.s > 0) S.view = { s: v.s, tx: v.tx, ty: v.ty };
-    else fitView();
+    if (v && v.s > 0) {
+      S.view = { s: v.s, tx: v.tx, ty: v.ty };
+      // ⚠️ 这条支路不经过 fitView()，而缩放的上下限基准 S.fit 只有 fitView() 会设 ——
+      // 少了它，滚轮就没有范围限制了（`S.view.s = S.fit ? 夹住 : 不夹`），
+      // 用户滚几下就能把照片甩到天边、再也找不回来。补上。
+      S.fit = fitScaleFor(viewRegion(), CW, CH) || 1;
+    } else fitView();
 
     bakeTone(FULL_SIDE);         // 这张照片自己存的画质调整，照它烘一遍
     $('empty').hidden = true;

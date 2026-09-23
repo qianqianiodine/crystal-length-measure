@@ -468,7 +468,8 @@ async function mobileChecks(file) {
   console.log('手机页');
   const page = makePage(file, '/m/tok123');
   // `get P()` 而不是 `P: P` —— P 是 let 绑定的，直接存下来会钉住旧对象
-  run(page, 'globalThis.__m = { pendRow, loadPend, paintPend, fillFolderSelect,'
+  run(page, 'globalThis.__m = { pendRow, loadPend, paintPend, pAdopt, prows,'
+    + ' fillFolderSelect,'
     + ' pSaveMap: pSaves, get P() { return P; }, setP: d => { P = d; }, tail };');
   const m = page.context.__m;
   await sleep(20);        // 同上：等页面启动时那次 loadPend() 先落地
@@ -562,10 +563,14 @@ async function mobileChecks(file) {
   const fRow = m.pendRow({ id: 21, name: 'A1-1', original_filename: 'a.jpg', size: 10,
                            status: 'ok', reason: '', import_source: 'mobile',
                            conflict: null, folder_id: 2, tags: [] });
-  const fsel = fRow.querySelector('select.pf');
-  check('F2 每行有自己的文件夹下拉', !!fsel);
-  check('F2 每行下拉停在服务端给的值上', fsel && fsel.value === '2',
-        `value=${fsel && fsel.value}`);
+  // 这个位置以前是「这张放哪个文件夹」的下拉 —— 和上面「这批照片放到」是同一件事，
+  // 用户 2026-09-23 要求换成让他自己填晶体板编号的空白框（整批那个说了算）。
+  const fno = fRow.querySelector('input.pno');
+  check('F2 每行有编号框', !!fno);
+  check('F2 编号框默认是空的，等用户自己填', fno ? fno.value === '' : false,
+        `value=${fno && fno.value}`);
+  check('F2 每行不再有文件夹下拉（整批那个说了算）',
+        !fRow.querySelector('select.pf'));
 
   // ---- F3：单张也进待确认列表 ----
   // 真的触发一次上传（文件选择框的 change），再看它发出去的 URL。
@@ -600,7 +605,7 @@ async function mobileChecks(file) {
                            folder_id: null, tags: ['B5-1'] });
   const bot = row7.querySelector('.pbot');
   const sels = bot ? bot.querySelectorAll('select.tg') : [];
-  check('G1 每行第二行有文件夹 + 三个孔位下拉', !!bot && sels.length === 3,
+  check('G1 每行第二行有编号框 + 三个孔位下拉', !!bot && sels.length === 3,
         `pbot=${!!bot} 孔位下拉=${sels.length}`);
   check('G2 已有的孔位拆回三个下拉',
         sels.length === 3 && sels.map(s => s.value).join('/') === 'B/5/孔1',
@@ -622,10 +627,59 @@ async function mobileChecks(file) {
         !!g4 && Array.isArray(g4.tags) && g4.tags.length === 0, JSON.stringify(g4));
 
   // 这几个处理函数都会让服务端回整份列表、整表重画 —— 重画会把别人行里
-  // 还堵在 400ms 定时器里的名字顶回旧值。所以每个前面都得先冲一次。
+  // 还堵在 400ms 定时器里的字顶回旧值。所以每个前面都得先冲一次。
+  // 现在是 4 处：孔位下拉、删除这一行、整批文件夹、确认导入。
+  // （行里那个编号框和名字框一样是 400ms 防抖 —— 它是**被冲**的一方，不算在内。）
   const flushes = (page.html.match(/await pFlushNames\(\)/g) || []).length;
-  check('G5 会让整表重画的地方都先冲名字（行文件夹/孔位/删除/整批/确认）',
-        flushes >= 5, `${flushes} 处`);
+  check('G5 会让整表重画的地方都先冲名字（孔位/删除/整批/确认）',
+        flushes >= 4, `${flushes} 处`);
+
+  // ---- G6~G8：编号框 + 孔位 = 名字 ----
+  // 编号是一整块板共用的，孔位是每张各不相同的；两个拼起来才是「编号-行-列-孔」，
+  // 和图库打标签对话框同一个规则。用户 2026-09-23 要求那一行改成填编号的空白框。
+  // 此刻 G4 刚把孔位清空了，所以正好先测"只有编号"这一半。
+  const no7 = bot.querySelector('input.pno');
+  check('G6 每行第二行有编号框，默认空的', !!no7 && no7.value === '',
+        no7 ? `value=${no7.value}` : '没找到');
+
+  page.calls.length = 0;
+  no7.value = '20260923-29';
+  await Promise.all(no7.dispatch('input'));
+  await sleep(450);                        // 编号框是 400ms 防抖
+  const g6 = sent(page.calls.find(c => c.method === 'PATCH'));
+  check('G6 只有编号、没选孔位时，名字就是编号本身',
+        !!g6 && g6.name === '20260923-29', JSON.stringify(g6));
+
+  page.calls.length = 0;
+  sels[1].value = '7';                     // 选上孔位 → 名字该长全
+  await Promise.all(sels[1].dispatch('change'));
+  const g7 = sent(page.calls.find(c => c.method === 'PATCH'));
+  check('G7 编号 + 新选的孔位一起拼进名字',
+        !!g7 && g7.name === '20260923-29-B-7-1' && String(g7.tags) === 'B7-1',
+        JSON.stringify(g7));
+
+  // ⚠️ 编号留空时改孔位**绝不能**发 name：后端收到空串会真把名字清掉
+  // （那是"到确认时回退到原始文件名"的意思），等于把用户起好的名字抹了。
+  page.calls.length = 0;
+  no7.value = '';
+  sels[1].value = '3';
+  await Promise.all(sels[1].dispatch('change'));
+  const g8 = sent(page.calls.find(c => c.method === 'PATCH'));
+  check('G8 编号留空时改孔位不发 name（发了会把名字清掉）',
+        !!g8 && g8.name === undefined && String(g8.tags) === 'B3-1',
+        JSON.stringify(g8));
+
+  // ---- G9：整表重画之后，框里的编号不能没 ----
+  // 服务端每次返回的都是全新的 item，编号只是前端临时填的 —— 不搬过去就没了，
+  // 而它还得跟孔位一起拼名字（用户会看到"我填的编号自己消失了"）。
+  m.setP({ items: [{ id: 7, name: 'x', tags: [], status: 'ok', _no: '20260923-29' }] });
+  m.pAdopt({
+    items: [{ id: 7, name: '20260923-29', tags: [], status: 'ok', folder_id: null }],
+    folders: [],
+  });
+  const kept = m.prows.querySelector('input.pno');
+  check('G9 整表重画后编号还在框里',
+        !!kept && kept.value === '20260923-29', kept ? `value=${kept.value}` : '没找到');
 }
 
 // 从手机页的内联 CSS 里读 .prow .rm 的 padding。手指点得中与否没法在

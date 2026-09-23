@@ -140,11 +140,11 @@ _PAGE = """<!doctype html>
      没有撤销、也没有二次确认，误触的代价是重新拍照重传。手机是这个页面的主设备。 */
   .prow .rm { flex: 0 0 auto; background: none; border: 0; color: var(--mute);
               font-size: 19px; padding: 10px 12px; }
-  /* 每行第二行：左边「放到哪个文件夹」、右边三个孔位下拉。
+  /* 每行第二行：左边填编号、右边三个孔位下拉。
      ⚠️ 手机屏窄，孔位那三个是 `flex: 0 0 auto`（不让缩，缩了「孔1」就剩半个字），
-     让文件夹那个下拉去吸收剩下的宽度 —— 反过来整行会横着滚。 */
+     让编号框去吸收剩下的宽度 —— 反过来整行会横着滚。 */
   .prow .pbot { display: flex; gap: 6px; align-items: center; margin-top: 7px; }
-  .prow .pf { flex: 1 1 auto; min-width: 0; font: 14px var(--ui);
+  .prow .pno { flex: 1 1 auto; min-width: 0; font: 14px var(--ui);
               color: var(--text); background: var(--ink);
               border: 1px solid var(--rule); border-radius: 3px; padding: 8px 9px; }
   .prow .pbot select.tg { flex: 0 0 auto; width: auto; font: 14px var(--ui);
@@ -294,6 +294,20 @@ function pRowError(row, msg) {
   if (!old) row.append(p);
 }
 
+// 收下服务端返回的整份列表并重画。
+// 服务端每次给的都是全新的 item 对象，前端临时填的「编号」不在里面 ——
+// 直接换掉的话输入框里的字就没了，而它还要跟孔位一起拼名字。
+// 所以按 id 把编号搬过去。（名字本身早就存到服务端了，丢的只是这个框。）
+function pAdopt(d) {
+  const old = new Map((P.items || []).map(it => [it.id, it._no]));
+  for (const it of d.items || []) {
+    const v = old.get(it.id);
+    if (v !== undefined) it._no = v;
+  }
+  P = d;
+  paintPend();
+}
+
 function paintPend() {
   FOLDERS = P.folders || [];
   paintBatchFolder();
@@ -359,28 +373,26 @@ function pendRow(it) {
   rm.addEventListener('click', async () => {
     await pFlushNames();       // 整表重画之前，先把别的行刚打的字发出去
     const d = await pj(`/m/${token}/imports/${it.id}`, 'DELETE');
-    if (d) { P = d; paintPend(); }
+    if (d) { pAdopt(d); }
   });
   top.append(rm);
 
-  // 第二行：左边放哪儿，右边三个孔位下拉。
+  // 第二行：左边填编号，右边三个孔位下拉。
+  // ⚠️ 这个位置以前是「这一张放哪个文件夹」的下拉 —— 和上面「这批照片放到」
+  //    是同一件事，用户 2026-09-23 要求换成让他自己填晶体板编号的空白框。
+  //    整批放哪个文件夹，现在只由上面那一个下拉决定。
   const bot = document.createElement('div');
   bot.className = 'pbot';
 
-  const fsel = document.createElement('select');
-  fsel.className = 'pf';
-  fsel.title = '这张放哪个文件夹';
-  fillFolderSelect(fsel, it.folder_id);
-  fsel.addEventListener('change', async () => {
-    // ⚠️ 这一下会让服务端返回整份列表、整表重画 —— 别人那边刚打的字还堵在
-    // 400ms 的定时器里，先冲出去，不然重画一次就从屏幕上没了。
-    await pFlushNames();
-    const d = await pj(`/m/${token}/imports/${it.id}`, 'PATCH',
-                       { folder_id: folderValue(fsel) });
-    if (!d) { pRowError(row, pjError); return; }
-    pRowError(row, '');
-    it.folder_id = d.folder_id;
-  });
+  const no = document.createElement('input');
+  no.type = 'text';
+  no.className = 'pno';
+  no.placeholder = '编号';
+  no.title = '晶体板编号 —— 填了这张就改名成「编号-行-列-孔」';
+  no.maxLength = 60;          // 再拼上「-行-列-孔」也离服务端那 100 字上限很远
+  no.autocomplete = 'off';
+  no.spellcheck = false;
+  if (it._no !== undefined) no.value = it._no;    // 整表重画前填过的，接着用
 
   // 注意：这段 JS 是 Python 的普通字符串，正则里不能出现反斜杠转义
   // （写了的话 Python 会抛 SyntaxWarning，严格模式下直接报错）。
@@ -393,17 +405,44 @@ function pendRow(it) {
     s.addEventListener('change', async () => {
       await pFlushNames();     // 同上：重画之前先把排队的名字发出去
       const t = tagOf(selA, selN, selH);
-      const d = await pj(`/m/${token}/imports/${it.id}`, 'PATCH',
-                         { tags: t ? [t] : [] });
+      const body = { tags: t ? [t] : [] };
+      // 编号 + 孔位 = 名字，和电脑上图库那个打标签对话框同一个规则。
+      // ⚠️ 编号留空时**不发 name**：后端收到空串会真把名字清掉（等于回退成原始文件名）。
+      const nm = nameWithPlate(no.value.trim(), t);
+      if (nm) body.name = nm;
+      const d = await pj(`/m/${token}/imports/${it.id}`, 'PATCH', body);
       if (!d) { pRowError(row, pjError); return; }
       pRowError(row, '');
       it.tags = d.tags;
+      it.name = d.name;
+      inp.value = d.name;      // 上面那个名字框跟着变，用户看得见改名生效了
       // 只更新冲突提示，不重画 —— 重画会把手机键盘顶掉，也会把别人行里
       // 刚打的字顶回旧值（它们还堵在定时器里）
       paintNote(row, it);
     });
   }
-  bot.append(fsel, selA, selN, selH);
+
+  // 编号框自己改了也要重算名字（孔位已经选好的话，两个一起拼）。
+  let nt = null;
+  const sendNo = async () => {
+    pSaves.delete(`no:${it.id}`);
+    const nm = nameWithPlate(no.value.trim(), tagOf(selA, selN, selH));
+    if (!nm) return;                    // 编号留空 = 不动名字
+    const d = await pj(`/m/${token}/imports/${it.id}`, 'PATCH', { name: nm });
+    if (!d) { pRowError(row, pjError); return; }
+    pRowError(row, '');
+    it.name = d.name;
+    inp.value = d.name;
+  };
+  no.addEventListener('input', () => {
+    it._no = no.value;
+    clearTimeout(nt);
+    nt = setTimeout(sendNo, 400);
+    // 和名字框同一个规矩：记进 pSaves，整表重画之前先把它发出去
+    pSaves.set(`no:${it.id}`, { timer: nt, run: sendNo });
+  });
+
+  bot.append(no, selA, selN, selH);
   row.append(top, bot);
 
   if (it.status === 'failed') {
@@ -436,7 +475,7 @@ function paintNote(row, it) {
 
 async function loadPend() {
   const d = await pj(`/m/${token}/imports`, 'GET');
-  if (d) { P = d; paintPend(); }
+  if (d) { pAdopt(d); }
 }
 
 // ---------- 文件夹 ----------
@@ -509,10 +548,22 @@ function tagOf(a, n, h) {
   return `${a.value}${n.value}-${h.value === '孔1' ? 1 : 2}`;
 }
 
+// 「编号」+ 孔位 = 名字：编号 20260923-29 + 孔位 B5 孔1 → 20260923-29-B-5-1。
+// 和图库打标签对话框里那条 nameWithPlate() 是同一个规则（名字尾巴带孔号，
+// 不然同一个池的两个孔会拼出一模一样的名字，在列表里分不出谁是谁）。
+// 三个下拉没选全时名字就只剩编号本身 —— 用户填了编号就照他填的来。
+function nameWithPlate(no, tag) {
+  // ⚠️ 没填编号就返回空串（= 不改名字）。少了这一行，空编号 + 选好的孔位会
+  // 拼出一个 "-B-3-1" 发出去 —— 用户没碰编号，名字却被改成了个横杠开头的怪东西。
+  if (!no) return '';
+  const m = /^([A-H])([1-9]|1[0-2])-([12])$/.exec(tag || '');
+  return m ? `${no}-${m[1]}-${m[2]}-${m[3]}` : no;
+}
+
 pfolder.addEventListener('change', async () => {
   await pFlushNames();         // 整表重画之前，先把排队的名字发出去
   const d = await pj(`/m/${token}/imports/folder`, 'PUT', { folder_id: folderValue(pfolder) });
-  if (d) { P = d; paintPend(); }
+  if (d) { pAdopt(d); }
   else tail.textContent = pjError || '没存上，再试一次';
 });
 
