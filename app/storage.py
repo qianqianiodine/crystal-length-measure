@@ -12,6 +12,7 @@ import ipaddress
 import secrets
 import shutil
 import socket
+import subprocess
 import time
 from io import BytesIO
 from pathlib import Path
@@ -161,11 +162,94 @@ def discard_staged(stored: str) -> bool:
     return True
 
 
+# ipconfig 的网卡段落头里带这些字样 = 虚拟网卡。手机连不上它们 —— 那些"默认路由"是电脑自己走
+# VPN / 虚拟交换机用的，跟局域网不是一回事。只降权、不过滤：万一用户手上真只有这
+# 一张网卡，至少还留着一个地址可选，不至于列表空掉、二维码都出不来。
+_VIRTUAL_HINTS = (
+    "vethernet", "wsl", "vpn", "vnic", "atrust", "virtual", "vmware", "vbox",
+    "virtualbox", "hyper-v", "tap", "tun", "npcap", "loopback", "docker",
+    "tailscale", "zerotier", "hamachi", "radmin", "bluetooth",
+)
+
+
+def _ipconfig_adapters() -> list[tuple[str, bool, bool]]:
+    """跑一次 ipconfig，返回 [(IPv4 地址, 有没有默认网关, 名字像不像虚拟网卡)]。
+
+    只认 ipconfig 的**结构**，不认中文还是英文界面：
+      - 段头 = 顶格、以冒号结尾的那一行（`无线局域网适配器 WLAN:` / `Ethernet adapter Ethernet:`）
+      - 段里 IPv4 行往下数第 2 行就是默认网关行；冒号后面是空的 = 这张网卡没有网关
+    段头整行拿去匹配 _VIRTUAL_HINTS，**不剥前缀** —— 本地化的"无线局域网适配器"
+    里不含那些词，网卡自己的名字（WLAN / aTrustVNIC / vEthernet (WSL)）也不含。
+    （试过取最后一个空格分隔的词当网卡名，撞上 `vEthernet (WSL)` 这种带空格的会剥错。）
+
+    为什么要看网关：**只有真连在局域网上的网卡才会被分配到默认网关**。VPN / WSL /
+    VMware 这些虚拟网卡的网关字段是空的 —— 2026-09-23 在用户机器上实测，aTrust 的
+    2.0.0.1 和 WSL 的 172.22.48.1 都是空的，只有 WLAN 的 10.200.30.175 有网关。
+
+    拿不到就返回空列表，调用方照原样排 —— 功能不受影响，只是少一层排序依据。
+    """
+    try:
+        raw = subprocess.run(["ipconfig"], capture_output=True, timeout=5,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+    # 全程只看 ASCII（"IPv4"、网卡名、数字），解错码也不影响判断
+    lines = raw.decode("gbk", "replace").replace("：", ":").splitlines()
+
+    found: list[tuple[str, bool, bool]] = []
+    head = ""
+    body: list[str] = []
+
+    def flush() -> None:
+        virtual = any(h in head.lower() for h in _VIRTUAL_HINTS)
+        for i, ln in enumerate(body):
+            if "IPv4" not in ln:
+                continue
+            ip = ln.rsplit(":", 1)[-1].strip()
+            try:
+                ipaddress.IPv4Address(ip)
+            except ValueError:
+                continue
+            gw = body[i + 2].rsplit(":", 1)[-1].strip() if i + 2 < len(body) else ""
+            found.append((ip, bool(gw), virtual))
+
+    for ln in lines:
+        if ln[:1].strip() and ln.rstrip().endswith(":"):
+            flush()
+            head = ln.strip()
+            body = []
+        else:
+            body.append(ln)
+    flush()
+    return found
+
+
+def _rank_ips(ips: list[str], adapters: list[tuple[str, bool, bool]]) -> list[str]:
+    """按"手机连得上的可能性"重排地址：有网关 +2，名字不像虚拟网卡 +1。
+
+    sorted 是稳定排序，同分保持传入顺序 —— 所以 adapters 为空（拿不到 ipconfig）时
+    结果和传入的一模一样，不会比现在更差。
+    """
+    known = {ip: (has_gw, virtual) for ip, has_gw, virtual in adapters}
+
+    def score(ip: str) -> int:
+        has_gw, virtual = known.get(ip, (False, False))
+        return (2 if has_gw else 0) + (0 if virtual else 1)
+
+    return sorted(ips, key=score, reverse=True)
+
+
 def local_ips() -> list[str]:
-    """本机在局域网里可能的地址，最可能的排第一。
+    """本机在局域网里可能的地址，**手机最可能连得上的排第一**。
 
     返回列表而不是单个地址：这台机器常带 Hyper-V / WSL / VMware / VPN 虚拟网卡，
     VPN 一开默认路由就指向它，只报一个地址的话二维码会静默编成手机到不了的网址。
+
+    ⚠️ 排序**不能**信"走默认路由的那张" —— 那个探测恰好会被 VPN 骗到。2026-09-23
+    实测：它返回的就是 aTrust VPN 的 2.0.0.1，手机真正连得上的 WLAN
+    10.200.30.175 被挤到第二，用户看到的就是"第一个网址打不开、选第二个才行"。
+    改看两个硬指标：这张网卡有没有默认网关、名字像不像虚拟网卡。
     """
     out: list[str] = []
 
@@ -188,7 +272,7 @@ def local_ips() -> list[str]:
                 out.append(ip)
     except OSError:
         pass
-    return out
+    return _rank_ips(out, _ipconfig_adapters())
 
 
 def qr_png_bytes(url: str) -> bytes:

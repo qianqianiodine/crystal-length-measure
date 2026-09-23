@@ -1012,8 +1012,8 @@ $('gMobile').addEventListener('click', async () => {
     // 扫不出来时用户还能自己照着敲，或者发到微信里点开
     addr.textContent = d.urls[0] || '没找到能用的地址';
     img.src = '/api/net/qrcode' + netQ();
-    // 这台电脑常带 Hyper-V / WSL / VMware / VPN 虚拟网卡，VPN 一开默认路由就指向它。
-    // urls[0] 就是走默认路由的那张 —— 手机扫了连不上时，必须能换一张。
+    // 这台电脑常带 Hyper-V / WSL / VMware / VPN 虚拟网卡 —— 光看"默认路由"会被 VPN
+    // 骗到。urls[0] 是后端挑出来的、手机最可能连上的那张；扫了连不上还能换一张。
     if (d.urls.length >= 2) {
       // 一排光秃秃的地址没人看得懂 —— 先写清楚这是干嘛的
       const lab = document.createElement('p');

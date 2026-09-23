@@ -32,7 +32,10 @@ SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}
 # 接口版本。加/改接口就 +1 —— launch.py 靠它认出"端口上跑的是旧版本"。
 # 不加这个的话，用户双击 启动.bat 会被老进程的 /api/health 骗过去，
 # 页面是新的、接口是旧的，报一堆英文的 "Not Found"。
-API_VERSION = 17
+# 17 → 18（2026-09-23）：接口形状没变，但手机地址的**排序**变了。老进程还开着的话
+#   用户会看到跟修之前一模一样的第一个网址，以为白修了 —— 靠这一位让 launch.py
+#   把"先关掉那个黑窗口再开"喊出来。
+API_VERSION = 18
 
 
 def ensure_dirs() -> None:
