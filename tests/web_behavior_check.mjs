@@ -188,6 +188,7 @@ function makePage(htmlFile, pathname, search = '') {
   doc.body = new El('body', doc);
 
   const store = new Map();
+  const sstore = new Map();          // sessionStorage 另开一份，别和 localStorage 混
   const listeners = {};
   const win = {
     addEventListener(t, fn) { (listeners[t] ||= []).push(fn); },
@@ -205,6 +206,14 @@ function makePage(htmlFile, pathname, search = '') {
       getItem: k => (store.has(k) ? store.get(k) : null),
       setItem: (k, v) => store.set(k, String(v)),
       removeItem: k => store.delete(k),
+    },
+    // 手机页的传送记录存在 sessionStorage 里（手机锁屏常常让页面自己重载，
+    // 只放内存的话记录会悄悄清零）。沙箱里没有它的话，页面里那句 try/catch
+    // 会**静默吞掉** —— 检查就永远测不到"到底存没存进去"。
+    sessionStorage: {
+      getItem: k => (sstore.has(k) ? sstore.get(k) : null),
+      setItem: (k, v) => sstore.set(k, String(v)),
+      removeItem: k => sstore.delete(k),
     },
     // 上传走的是 new FormData()；沙箱里没有它就会在发出请求**之前**抛 ReferenceError，
     // 于是「粘贴有没有被抢」这类检查会以崩溃收场，而不是报 FAIL。
@@ -460,6 +469,28 @@ async function galleryChecks() {
   const s31 = row31 && row31.querySelector('select.pf');
   check('F5 图库待确认行有文件夹下拉', !!s31);
   check('F5 图库待确认行下拉停在 2 上', s31 && s31.value === '2', `value=${s31 && s31.value}`);
+
+  // ---- K1：卡片上那个「标签」按钮显示**照片名字**，不是光一个孔位 ----
+  // 用户 2026-10-06 报的：按钮上只写 `A6-1`，上传时填的编号 `w1+w2` 在卡片上就没了。
+  // 导出的文件名用的是**同一个字符串**（app/exporter.py 的 export_plan），
+  // 两边必须是同一条规则 —— 这条检查就是钉住"按钮这边也带着编号"。
+  const cardChip = it => {
+    const btns = g.makeCard(it).querySelectorAll('button.file');  // [归档…, 标签…]
+    return btns.length ? btns[btns.length - 1] : null;
+  };
+  const 带编号 = { id: 20, name: 'w1+w2-A-6-1', original_filename: 'image.jpg',
+                  import_time: 1759000000, line_count: 0, folders: [], tags: ['A6-1'],
+                  thumb_ver: 1 };
+  const chip = cardChip(带编号);
+  check('K1 标签按钮显示照片名字（编号在里面）',
+        chip && chip.textContent === 'w1+w2-A-6-1', chip && chip.textContent);
+  check('K1 标签按钮不再只显示孔位', chip && chip.textContent !== 'A6-1');
+
+  // 没标孔位的照片：按钮还是那句"去标一下"，不改成显示名字
+  const 没标签 = { ...带编号, id: 21, name: 'w1+w2-C-2-1', tags: [] };
+  const chip2 = cardChip(没标签);
+  check('K1 没标签时按钮仍是「标签…」',
+        chip2 && chip2.textContent === '标签…', chip2 && chip2.textContent);
 }
 
 /* ---------------- 手机页 ---------------- */
@@ -620,10 +651,10 @@ async function mobileChecks(file) {
         JSON.stringify(g3));
 
   page.calls.length = 0;
-  sels[1].value = '';                        // 全选「—」= 不标
+  sels[1].value = '';          // 行/列选「—」= 不标（孔位那一栏已经没有「—」了）
   await Promise.all(sels[1].dispatch('change'));
   const g4 = sent(page.calls.find(c => c.method === 'PATCH'));
-  check('G4 全选「—」发的是空数组（不是干脆不发这个字段）',
+  check('G4 行/列选「—」发的是空数组（不是干脆不发这个字段）',
         !!g4 && Array.isArray(g4.tags) && g4.tags.length === 0, JSON.stringify(g4));
 
   // 这几个处理函数都会让服务端回整份列表、整表重画 —— 重画会把别人行里
@@ -637,7 +668,7 @@ async function mobileChecks(file) {
   // ---- G6~G8：编号框 + 孔位 = 名字 ----
   // 编号是一整块板共用的，孔位是每张各不相同的；两个拼起来才是「编号-行-列-孔」，
   // 和图库打标签对话框同一个规则。用户 2026-09-23 要求那一行改成填编号的空白框。
-  // 此刻 G4 刚把孔位清空了，所以正好先测"只有编号"这一半。
+  // 此刻 G4 刚把「列」清空了（= 不标），所以正好先测"只有编号"这一半。
   const no7 = bot.querySelector('input.pno');
   check('G6 每行第二行有编号框，默认空的', !!no7 && no7.value === '',
         no7 ? `value=${no7.value}` : '没找到');
@@ -680,6 +711,119 @@ async function mobileChecks(file) {
   const kept = m.prows.querySelector('input.pno');
   check('G9 整表重画后编号还在框里',
         !!kept && kept.value === '20260923-29', kept ? `value=${kept.value}` : '没找到');
+
+  // ---- G10~G13：孔位那一栏没有「不选」，默认孔1（用户 2026-10-06）----
+  // 用户原话："如果我不选择孔1还是孔2就默认是孔1，没有「—」这个选项，
+  // 即我不选择这一栏也不影响我的标签写入，而是默认孔1"。
+  const row8 = m.pendRow({ id: 8, name: 'IMG_8', original_filename: 'IMG_8.jpg',
+                           size: 100, status: 'ok', reason: '',
+                           import_source: 'mobile', conflict: null,
+                           folder_id: null, tags: [] });     // 从没标过孔位
+  const sels8 = row8.querySelector('.pbot').querySelectorAll('select.tg');
+  const opts8 = sels8[2].querySelectorAll('option').map(o => o.value);
+  check('G10 孔位下拉没有「—」那一档',
+        opts8.length === 2 && !opts8.includes(''), JSON.stringify(opts8));
+  check('G11 没标过孔位的行默认停在孔1', sels8[2].value === '孔1',
+        `value=${sels8[2].value}`);
+
+  // 只选行和列、**不碰孔位那一栏** —— 照样得标上，孔位按孔1算
+  page.calls.length = 0;
+  sels8[0].value = 'C';
+  await Promise.all(sels8[0].dispatch('change'));
+  sels8[1].value = '4';
+  await Promise.all(sels8[1].dispatch('change'));
+  const patches = page.calls.filter(c => c.method === 'PATCH').map(sent);
+  check('G12 行 + 列选上就算标好，孔位自动算孔1',
+        patches.length >= 2 && String(patches[patches.length - 1].tags) === 'C4-1',
+        JSON.stringify(patches));
+  // ⚠️ 反过来也要成立：只选了行、列还空着 —— 那就是"不标"，
+  //    不能因为孔位有默认值就把每张都标上。
+  check('G13 行选了、列还空着 → 还是不标（空数组）',
+        Array.isArray(patches[0].tags) && patches[0].tags.length === 0,
+        JSON.stringify(patches[0]));
+
+  // ---- G14~G17：传送记录（用户 2026-10-06）----
+  // 要的：批量 / 拍照 / 混着来都进同一份、每条写名字，而且**再传一批不清空上一批**。
+  // 上一版每批开头 `list.innerHTML = ''` —— 传完 3 张再拍一张，前 3 条就没了。
+  const fileInput = page.doc.getElementById('f');
+  const 传一张 = async (id, name) => {
+    page.state.reply = url => (String(url).includes('/upload')
+      ? { body: { staged: [{ id, name, tags: [] }] } } : null);
+    fileInput.files = [{ name: name + '.jpg' }];
+    await Promise.all(fileInput.dispatch('change'));
+  };
+  const 记录行 = () => page.doc.getElementById('list').querySelectorAll('li');
+
+  // ⚠️ 前面 F3 那次上传也在记录里留了一条（那正是这功能在起作用：记录不清空）。
+  //    所以这里按**增量**断言，别写死总数。
+  const n0 = 记录行().length;
+
+  await 传一张(91, 'IMG_91');
+  const r1 = 记录行();
+  check('G14 传完一条就多一条记录，写的是服务端起的名字',
+        r1.length === n0 + 1 && r1[n0].textContent.includes('IMG_91'),
+        r1.map(r => r.textContent).join(' | '));
+
+  await 传一张(92, 'IMG_92');
+  const r2 = 记录行();
+  check('G15 再传一批不清空上一批（批量 + 拍照混着来都摞在同一份里）',
+        r2.length === n0 + 2 && r2[n0].textContent.includes('IMG_91')
+        && r2[n0 + 1].textContent.includes('IMG_92'),
+        r2.map(r => r.textContent).join(' | '));
+
+  const 存了 = page.context.sessionStorage.getItem('jltx.sent');
+  check('G16 记录存进了 sessionStorage（手机锁屏重载之后还在）',
+        !!存了 && JSON.parse(存了).length === n0 + 2, String(存了));
+
+  // 名字跟着「待确认列表」走：下面填好「编号」+ 孔位，上面这条就变成那个名字
+  page.state.pending = {
+    items: [{ id: 92, name: 'JBScreen-G-3-1', original_filename: 'IMG_92.jpg',
+              size: 100, status: 'ok', reason: '', import_source: 'mobile',
+              conflict: null, folder_id: null, tags: ['G3-1'] }],
+    folders: [], total_size: 100, ok_count: 1, failed_count: 0,
+  };
+  await m.loadPend();
+  const r3 = 记录行();
+  check('G17 下面起好名字，上面那条跟着变（不是一直挂着手机文件名）',
+        r3.length === n0 + 2 && r3[n0 + 1].textContent.includes('JBScreen-G-3-1'),
+        r3.map(r => r.textContent).join(' | '));
+
+  // G18：另一半 —— 重新打开页面（手机锁屏常常会这样）时，存着的记录要画回来。
+  // 只测"存进去"不够：读出来画不出来，用户看到的还是一片空。
+  const page2 = makePage(file, '/m/tok123');
+  page2.context.sessionStorage.setItem('jltx.sent', JSON.stringify([
+    { pid: 5, name: 'JBScreen-A-1-1', st: '已导入', cls: 'ok', why: '' },
+    { pid: null, name: 'IMG_77.jpg', st: '失败', cls: 'bad', why: '这不是图片' },
+  ]));
+  run(page2, '');
+  const 行2 = page2.doc.getElementById('list').querySelectorAll('li');
+  check('G18 重载之后把存着的记录画回来（连失败原因一起）',
+        行2.length === 2 && 行2[0].textContent.includes('JBScreen-A-1-1')
+        && 行2[1].textContent.includes('这不是图片'),
+        行2.map(r => r.textContent).join(' | '));
+
+  // G19：「确认导入」之后记录**不消失**，只把状态改成「已导入」（用户指定的）。
+  // 记录是"我传过什么"，不是"还差什么没确认"—— 后者是下面那张表的活。
+  page.state.reply = url => (String(url).includes('/imports/confirm')
+    ? { body: { imported: 2 } } : null);
+  page.state.pending = { items: [], folders: [], total_size: 0, ok_count: 0,
+                         failed_count: 0 };
+  await Promise.all(page.doc.getElementById('pok').dispatch('click'));
+  const r4 = 记录行();
+  check('G19 确认导入之后记录还在，状态改成「已导入」',
+        r4.length === n0 + 2 && r4[n0 + 1].textContent.includes('已导入'),
+        r4.map(r => r.textContent).join(' | '));
+
+  // G20：没传过东西时「传送记录」也**要露出来**。
+  // 用户 2026-10-06 报过"重启了也没更新" —— 其实新页面已经在手机上，只是这一块
+  // 当时是"空的就藏起来"，屏幕上和旧的**一模一样**，没法判断。别改回隐藏。
+  const page3 = makePage(file, '/m/tok123');
+  run(page3, '');
+  const 空提示 = page3.doc.getElementById('sempty');
+  check('G20 没传过时也显示「传送记录」那一块（还带一句提示）',
+        !!空提示 && 空提示.hidden === false
+        && page3.doc.getElementById('list').querySelectorAll('li').length === 0,
+        空提示 ? `hidden=${空提示.hidden}` : '没找到那句提示');
 }
 
 // 从手机页的内联 CSS 里读 .prow .rm 的 padding。手指点得中与否没法在
@@ -1136,8 +1280,10 @@ function plateChecks() {
   const code = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)]
     .map(m => m[1]).join('\n');
   const ctx = vm.createContext({});
-  vm.runInContext(pickFunc(code, 'nameWithPlate'), ctx);
+  vm.runInContext(pickFunc(code, 'nameWithPlate') + '\n'
+                  + pickFunc(code, 'plateNoOf'), ctx);
   const np = ctx.nameWithPlate;
+  const pn = ctx.plateNoOf;
 
   // 用户给的例子 + 结尾那个孔号：编号 + '-' + 行 + '-' + 列 + '-' + 孔号
   check('P1 编号 + 孔位拼成 20260923-29-B-5-1',
@@ -1160,6 +1306,52 @@ function plateChecks() {
   check('P7 整批框在滚动区外面',
         /wrap\.append\(bb, list\)/.test(code) && /list\.append\(row\)/.test(code)
         && !/wrap\.className = 'tagList'/.test(code));
+
+  // ---- P8~P16：反向拆编号（打开对话框时预填进那个框）----
+  // 用户 2026-10-06：点开标签，编号框是空的，他改完孔位一点确定，
+  // 名字里原来的编号就被抹掉了。所以要能从名字里把编号拆回来。
+  check('P8 从名字里拆回编号', pn('pi-minimal-A-4-1', 'A4-1') === 'pi-minimal',
+        pn('pi-minimal-A-4-1', 'A4-1'));
+  check('P9 编号自己带横杠也拆得对', pn('w1+w2-A-6-1', 'A6-1') === 'w1+w2',
+        pn('w1+w2-A-6-1', 'A6-1'));
+  check('P10 两位数的列号照样拆', pn('MBP-C-10-1', 'C10-1') === 'MBP',
+        pn('MBP-C-10-1', 'C10-1'));
+  // 2026-09-23 之前拼的老名字没有结尾那个孔号
+  check('P11 老名字（没孔号）也拆得回来', pn('28-A-5', 'A5-1') === '28',
+        pn('28-A-5', 'A5-1'));
+  // ⚠️ 下面四条是"拆不出来必须留空"的护栏。返回整条名字的话，
+  //    用户一点确定就会把名字改成 `image-A-5-1` 这种怪东西。
+  check('P12 名字不是那个形状 → 空串（不动名字）', pn('image', 'A5-1') === '',
+        pn('image', 'A5-1'));
+  check('P13 孔位没选全 → 空串', pn('pi-minimal-A-4-1', '') === '',
+        pn('pi-minimal-A-4-1', ''));
+  check('P14 名字里的行对不上孔位 → 空串', pn('pi-minimal-A-4-1', 'B4-1') === '',
+        pn('pi-minimal-A-4-1', 'B4-1'));
+  // 重名后缀 ` (2)` 拆不出来 —— 宁可让用户自己填，也别猜（猜错会把 (2) 弄丢）
+  check('P15 名字带 (2) 后缀 → 空串', pn('2026092229-A-4 (2)', 'A4-1') === '',
+        pn('2026092229-A-4 (2)', 'A4-1'));
+  check('P16 对话框真的把编号预填进那个框',
+        /no\.value = plateNoOf\(it\.name, tag0\)/.test(code));
+
+  // ---- P17~P21：孔位默认孔1、整批框只在多选时出现（用户 2026-10-06）----
+  // `tagOf` 只读三个下拉的 `.value`，所以传几个假对象就能跑**真源码**。
+  const tctx = vm.createContext({});
+  vm.runInContext(pickFunc(code, 'tagOf'), tctx);
+  const tg = tctx.tagOf;
+  check('P17 孔位是空值也按孔1算（不能算成孔2）',
+        tg({ value: 'C' }, { value: '4' }, { value: '' }) === 'C4-1',
+        tg({ value: 'C' }, { value: '4' }, { value: '' }));
+  check('P18 选了孔2 照旧', tg({ value: 'C' }, { value: '4' }, { value: '孔2' }) === 'C4-2');
+  check('P19 行或列没选 → 不标',
+        tg({ value: 'C' }, { value: '' }, { value: '孔1' }) === ''
+        && tg({ value: '' }, { value: '4' }, { value: '孔1' }) === '');
+  // 从源头保证 P17 那条"空值"永远走不到：孔位那一栏根本不挂「—」
+  check('P20 孔位下拉不挂「—」那一档',
+        /mkSelect\(TAG_HOLES,[\s\S]{0,90}?false\)/.test(code));
+  // 单张照片就一行，那一行自己就有编号框，"覆盖所有行"的框纯碍事
+  check('P21 单张照片不画整批编号框',
+        /if \(items\.length > 1\) wrap\.append\(bb, list\)/.test(code)
+        && /else wrap\.append\(list\)/.test(code));
 }
 
 /* ---------------- 跑 ---------------- */

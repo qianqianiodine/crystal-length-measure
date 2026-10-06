@@ -59,10 +59,16 @@ def _name_from_file(filename: str) -> str:
     return _BAD_CHARS.sub("", stem).strip()[:NAME_MAX_LEN] or "未命名"
 
 
-def _unique_name(conn, name: str) -> str:
-    """撞名就加 " (2)"。库里 name 没有唯一约束，这里只为下拉框里能分清谁是谁。"""
+def _unique_name(conn, name: str, exclude: int | None = None) -> str:
+    """撞名就加 " (2)"。库里 name 没有唯一约束，这里只为下拉框里能分清谁是谁。
+
+    `exclude` 是**正在改名的这张图自己**（两条改名路都必传）：不排除它的话，把一张图
+    改成它此刻的名字会被当成"跟别人撞了"，平白加上 ` (2)` —— 而打标签对话框每次点
+    确定都会把预填的编号重新拼成名字发一遍，那就会**每点一次确定多一个后缀**。
+    """
     def taken(n: str) -> bool:
-        return conn.execute("SELECT 1 FROM images WHERE name=? LIMIT 1", (n,)).fetchone() is not None
+        return conn.execute("SELECT 1 FROM images WHERE name=? AND id IS NOT ? LIMIT 1",
+                            (n, exclude)).fetchone() is not None
 
     if not taken(name):
         return name
@@ -118,11 +124,20 @@ def _thumb_ver(conn, row, lines) -> int:
     return h
 
 
-def _import_one(conn, filename: str, data: bytes, source: str) -> dict:
-    """存盘 + 落库。坏图片抛 ValueError（消息可直接给用户看）。"""
+def _import_one(conn, filename: str, data: bytes, source: str,
+                folder: int | None = None) -> dict:
+    """存盘 + 落库。坏图片抛 ValueError（消息可直接给用户看）。
+
+    `folder`：图库当时在看哪个文件夹，这张就归到哪儿 —— 和「≥2 张走待确认列表」
+    那条路一致。**2026-10-06 之前这里是漏的**：单张导入走 direct，folder 直接丢了，
+    照片落进「未分类」，只在「全部照片」里看得见（用户报的就是这个）。
+    ⚠️ folder 存不存在由调用方保证（`_ingest` 开头查过一次），这里只管放。
+    """
     stored = storage.store_original(data)          # 先验后写
     name = _unique_name(conn, _name_from_file(filename))
     iid = db.create_image(conn, name, filename or "未命名", stored, source)
+    if folder is not None:
+        db.set_image_folders(conn, iid, [folder])
     return _summary(conn, db.get_image(conn, iid))
 
 
@@ -202,8 +217,9 @@ async def _ingest(conn, files, *, mode: str, source: str, default_name: str,
       电脑端两个页面都是**一个请求带多个文件**，所以服务端数得清；
       手机端一个请求一张，由手机页自己传 mode（见 api/mobile.py）。
 
-    folder 只在 pending 那条路上有意义（direct 直接入库，不进列表）。
-    传了不存在的 id（图库那边的文件夹在扫码之后被删了）当 None，
+    folder：图库当时在看哪个文件夹，这一批就归到哪儿 —— **两条路都认**
+    （direct 直接放进去，pending 记在行上、确认导入时放）。
+    传了不存在的 id（图库那边的文件夹在两次请求之间被删了）当 None，
     不 400 —— 用户没做错什么，照片进「未分类」就好。
     """
     if mode == "auto":
@@ -230,7 +246,7 @@ async def _ingest(conn, files, *, mode: str, source: str, default_name: str,
             if mode == "pending":
                 staged.append(_stage_one(conn, filename, data, size, source, folder, tags))
             else:
-                ok.append(_import_one(conn, filename, data, source))
+                ok.append(_import_one(conn, filename, data, source, folder))
         except Exception as e:                       # noqa: BLE001 —— 一个坏文件不该中断整批
             reason = _reason(e)
             if mode == "pending":
@@ -354,7 +370,8 @@ async def patch_image(image_id: int, body: RenameIn, conn=Depends(get_db)) -> di
     if db.get_image(conn, image_id) is None:
         raise HTTPException(404, "找不到这张图，可能记录被删了")
 
-    name = _unique_name(conn, _validate_name(body.name))
+    # exclude=自己：改成现在这个名字不算撞名（否则敲一遍原名字回车就多一个 " (2)"）
+    name = _unique_name(conn, _validate_name(body.name), exclude=image_id)
     db.update_image(conn, image_id, name=name)
     return _summary(conn, db.get_image(conn, image_id))
 
@@ -528,7 +545,10 @@ def batch_tags(body: BatchTagsIn, conn=Depends(get_db)) -> dict:
             # 和单张改名、和导入走同一条规矩：撞名加 " (2)"。
             # ⚠️ 必须在**循环里**现算，不能提前一把算完 —— 同一批里两行撞名时，
             #    前一行已经写进库了，后一行才算得出它该加后缀。
-            fields["name"] = _unique_name(conn, names[it.id])
+            # ⚠️ `exclude=it.id`：对话框每次点确定都会把**预填的**编号重新拼成名字发
+            #    一遍，不改名的那些行发的就是它现在的名字 —— 不排除自己的话会自我撞名，
+            #    每点一次确定名字就多一个 " (2)"。
+            fields["name"] = _unique_name(conn, names[it.id], exclude=it.id)
         db.update_image(conn, it.id, **fields)
         updated += 1
     return {"updated": updated}

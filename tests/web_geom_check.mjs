@@ -76,6 +76,7 @@ const factory = new Function(js + `
   return { S, render, renderExport, exportRegion, scaleBarInfo, scaleBarGeom,
            uz: n => n * UIZ, labelScreen, focusCropForLine,
            setFontPx: n => { FONT_PX = n; },
+           lineW: () => LINE_W, applyLineW,
            setCW: (w, h) => { CW = w; CH = h; SW = w; SH = h; },
            fitView, fitFullScale, fitScaleFor, exportSup };
 `);
@@ -123,8 +124,9 @@ for (const sup of [1, 2, 4]) {
   // 屏幕上 1px 在导出图里应该占 sup / 当前缩放 个像素
   const wantUiz = sup / 0.5;
   const lineWidths = calls.filter(c => c[0] === 'off' && c[1] === 'lineWidth').map(c => c[2]);
+  // 线宽现在可调（侧栏那个滑块），所以按**当前值**比，别钉死数字
   check(`${sup}× 线宽按 ${wantUiz} 倍放大`,
-        lineWidths.includes(3 * wantUiz),
+        lineWidths.includes(app.lineW() * wantUiz),
         `画过的线宽 ${[...new Set(lineWidths)].join(',')}`);
   check(`${sup}× 用完之后画布恢复原状`, JSON.stringify(app.S.view) === before,
         app.S.view.s + ' vs ' + JSON.parse(before).s);
@@ -236,6 +238,65 @@ const drawn = (tag, prop) =>
   check('长度数字和标尺字共用同一个字号',
         f16.length === 2 && f30.length === 2, `${f16.length} / ${f30.length} 种`);
   app.setFontPx(16);
+}
+
+// —— 线宽滑块：管着测量线的粗细，而且和字号一样是"照片的一部分" ——
+// 用户 2026-09-24 要的第二个旋钮（原话「划线的粗细大小也给一个滑动按钮调节」），
+// 并且明确要**和字号一样**：跟着照片缩放、不是钉在屏幕上的固定像素。
+{
+  const at = zoom => {
+    app.S.view = { s: zoom, tx: 0, ty: 0 };
+    calls.length = 0;
+    app.render();
+    return drawn('off', 'lineWidth');
+  };
+  // 基准 fitFullScale(940,668) = 0.5 → UIZ = 2·zoom → 画出来的线宽 = LINE_W × 2 × zoom。
+  // 用 includes 而不是取 [0]：照片上画的第一笔是标定圆，不是测量线。
+  const zoom = [0.25, 1, 5];
+  const want = z => app.lineW() * 2 * z;
+  const got = zoom.map(at);
+  check('屏幕上的线宽跟着照片一起缩放（和字号一样是"照片的一部分"）',
+        got.every((lws, i) => lws.includes(want(zoom[i]))),
+        zoom.map((z, i) => `${z}× 要 ${want(z)} ${got[i].includes(want(z)) ? '有' : '缺'}`).join(' / '));
+  // 还原视图。⚠️ 上面的循环把 S.view 停在 5× 了，而 UIZ 是 render() 算完**留在那儿**的 ——
+  // 后面「标签抬升」那段直接读 uz()、不重新 render，会拿到我这个 10 倍的 UIZ（实测踩到了）。
+  app.S.view = { s: 0.5, tx: 0, ty: 0 };
+  app.render();
+}
+
+// —— 线宽滑块本身的取值规则（上下限、半档吸附、读不到存的值时的回退）——
+{
+  const set = n => { app.applyLineW(n); return app.lineW(); };
+  check('线宽滑块：设几就是几', set(5) === 5, String(set(5)));
+  check('线宽滑块：超过上限 8 夹回 8', set(99) === 8, String(set(99)));
+  check('线宽滑块：低于下限 1 夹回 1', set(0.5) === 1, String(set(0.5)));
+  check('线宽滑块：1 本身取得到（用户 2026-09-24 要的"再小一点"）',
+        set(1) === 1, String(set(1)));
+  check('线宽滑块：半档 1.5 取得到，不会被四舍五入吃掉', set(1.5) === 1.5, String(set(1.5)));
+  check('线宽滑块：非半档的值吸附到最近的半档（1.3 → 1.5）', set(1.3) === 1.5, String(set(1.3)));
+  check('线宽滑块：localStorage 里没有/是坏值时回默认 2',
+        set(null) === 2 && set('abc') === 2, `${set(null)} / ${set('abc')}`);
+  app.applyLineW(2);            // 还原成默认，免得影响后面的用例
+}
+
+// —— 深色打底的宽度：线 ≥2 保持老样子，细到 1 时要跟着收窄 ——
+// 不收窄的话打底（每边固定 1.75px）比线芯还宽，画出来是一条黑线 ——
+// 这正是当初把下限卡在 2 的原因；要放开下限就必须同时钉住这条。
+{
+  const inkAt = w => {
+    app.applyLineW(w);
+    app.S.view = { s: 0.5, tx: 0, ty: 0 };   // fitFullScale = 0.5 → UIZ = 1，画出来就是原值
+    calls.length = 0;
+    app.render();
+    return drawn('off', 'lineWidth');
+  };
+  check('线宽 2：深色打底仍是 +3.5 —— 改这一版之前的样子，一像素没动',
+        inkAt(2).includes(2 + 3.5), `画过的线宽 ${[...new Set(inkAt(2))].join(',')}`);
+  check('线宽 1：深色打底收窄到 +1.75，不会盖过线芯',
+        inkAt(1).includes(1 + 1.75), `画过的线宽 ${[...new Set(inkAt(1))].join(',')}`);
+  app.applyLineW(2);
+  app.S.view = { s: 0.5, tx: 0, ty: 0 };
+  app.render();
 }
 
 // —— 标签的抬升量跟着字号走 ——

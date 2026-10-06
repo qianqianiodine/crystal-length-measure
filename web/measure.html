@@ -362,6 +362,11 @@ body.dragging #drop { display: flex; }
         <input id="exFont" type="range" min="10" max="34" step="1" value="16">
         <output id="exFontV">16</output>
       </div>
+      <div class="slider">
+        <label for="exLine">线宽</label>
+        <input id="exLine" type="range" min="1" max="8" step="0.5" value="2">
+        <output id="exLineV">2</output>
+      </div>
       <div class="actions">
         <button id="btnExportPng" class="primary" disabled>导出图片</button>
         <button id="btnExportCsv" disabled>导出表格</button>
@@ -544,9 +549,11 @@ function hitTest(p) {
 
 // ---------- 绘制 ----------
 // 所有图形先描一遍深色粗边再描本色 —— 照片亮处暗处都能看清
-function halo(path, color, width) {
+// pad = 深色打底比色芯每边宽多少（默认 3.5，即每边 1.75px）。
+// 只有测量线会传别的值 —— 见 drawLines() 里那段注释。
+function halo(path, color, width, pad = 3.5) {
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-  ctx.strokeStyle = INK; ctx.lineWidth = uz(width + 3.5); path(); ctx.stroke();
+  ctx.strokeStyle = INK; ctx.lineWidth = uz(width + pad); path(); ctx.stroke();
   ctx.strokeStyle = color; ctx.lineWidth = uz(width); path(); ctx.stroke();
 }
 
@@ -614,6 +621,15 @@ let FONT_PX = 16;        // 用户可调
 // 写死的话，字号调大就会"大字配小框"：文字压在线条上、选中框套不住字。
 const fontRatio = () => FONT_PX / FONT_BASE;
 
+// 测量线的粗细。和字号一样是**照片的一部分**（画的时候一样过 uz()）：
+// 照片放大线跟着变粗、缩小跟着变细，线相对照片的粗细恒定。
+// 用户 2026-09-24 要的第二个旋钮，原话「划线的粗细大小也给一个滑动按钮调节」。
+// 原来线宽写死 3、两端圆点半径 4.5，用户嫌粗、嫌圆点大 —— 默认改成 2。
+// 下限 1、步长 0.5：用户当天又说「再给我小一点儿的尺寸」，一次给够半个档，
+// 免得在 1 和 2 之间来回问（0.5 的线在 4× 导出里就是 2px，仍然量得准）。
+const LINE_DEF = 2, LINE_MIN = 1, LINE_MAX = 8, LINE_STEP = 0.5;
+let LINE_W = LINE_DEF;
+
 // 字号只取一次。label() 和 labelBox() 必须用同一个 font，
 // 否则量出来的宽度和画出来的对不上，选中框就会错位。
 //
@@ -672,10 +688,15 @@ function drawLines() {
   const picking = ctrlDown;    // 按住 Ctrl 才把标签框出来，平时不打扰
   for (const L of S.lines) {
     const p1 = toS(L.x1, L.y1), p2 = toS(L.x2, L.y2);
+    // 深色打底要跟着线一起细：halo() 默认那 +3.5（每边 1.75px）是给 ≥2 的线配的，
+    // 线细到 1 时它比色芯还宽，画出来是一条黑线。取「3.5」和「1.75 倍线宽」的较小者 ——
+    // 线 ≥2 时结果**正好还是 3.5**（跟改之前一像素不差），只有更细的档才收窄。
     halo(() => { ctx.beginPath(); ctx.moveTo(p1[0], p1[1]); ctx.lineTo(p2[0], p2[1]); },
-         L.color, 3);
-    dot(p1, 4.5, L.color, 2.5);
-    dot(p2, 4.5, L.color, 2.5);
+         L.color, LINE_W, Math.min(3.5, LINE_W * 1.75));
+    // 两端的圆点和它那圈描边按**固定比例**跟着线宽走（半径 1.5 倍、描边 0.8 倍，
+    // 就是原来 3 / 4.5 / 2.5 那组数的比例）—— 不跟着走的话，线调细了圆点会显得特别突兀。
+    dot(p1, LINE_W * 1.5, L.color, LINE_W * 0.8);
+    dot(p2, LINE_W * 1.5, L.color, LINE_W * 0.8);
 
     const b = labelBox(L);
     if (picking) {
@@ -1084,6 +1105,23 @@ function applyFontPx(n) {
 $('exFont').addEventListener('input', () => {
   applyFontPx($('exFont').value);
   try { localStorage.setItem(FONT_KEY, String(FONT_PX)); } catch {}
+  render();
+});
+
+// 测量线粗细滑块。和字号一样**单独存**、不进 session —— 粗细是"我这台机器
+// 看着舒服的粗细"，不是某一张照片的事，点「关掉这张」清了 session 也不该把它带回默认。
+const LINE_KEY = 'jltx.line';
+function applyLineW(n) {
+  // 吸附到最近的**半档**（不是整档）—— 滑块步长是 0.5，而 localStorage 里的值
+  // 可能是手改的或者上个大版本留下的整数，一律夹到 LINE_STEP 的整数倍上
+  const v = Number(n) || LINE_DEF;
+  LINE_W = Math.min(LINE_MAX, Math.max(LINE_MIN, Math.round(v / LINE_STEP) * LINE_STEP));
+  $('exLine').value = String(LINE_W);
+  $('exLineV').textContent = String(LINE_W);
+}
+$('exLine').addEventListener('input', () => {
+  applyLineW($('exLine').value);
+  try { localStorage.setItem(LINE_KEY, String(LINE_W)); } catch {}
   render();
 });
 
@@ -2362,8 +2400,9 @@ resize();
   const f = u.get('folder');
   S.scope = f ? f : '';                  // 没有这个参数、或者空值 = 全部
 
-  // 图上字号：读回来再画，免得刷一下先按默认 16 画一遍、再跳成你设的那个
+  // 图上字号 / 线宽：读回来再画，免得刷一下先按默认画一遍、再跳成你设的那个
   try { applyFontPx(localStorage.getItem(FONT_KEY)); } catch { applyFontPx(FONT_BASE); }
+  try { applyLineW(localStorage.getItem(LINE_KEY)); } catch { applyLineW(LINE_DEF); }
 
   // 孔直径要**先读** —— 它决定页面上那几个 "孔径 X mm" 显示什么，
   // 也决定用户接着拖圆时那串实时数字按多大的孔算。

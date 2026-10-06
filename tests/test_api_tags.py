@@ -177,3 +177,15 @@ def test_改的名字撞了旧的就加后缀(client):
     client.post("/api/images/batch-tags", json={"items": [
         {"id": i2, "tags": ["B5-1"], "name": "同一个"}]})
     assert sorted(_names(client).values()) == ["同一个", "同一个 (2)"]
+
+
+def test_名字没动就原样重发也不加后缀(client):
+    """对话框现在会把名字里已有的编号**预填**进那个框，于是每次点确定都会
+    把同一个名字重发一遍 —— 那是这张图自己的名字，不能算撞名。
+    少了这条护栏就是"每点一次确定名字长一截"（`_unique_name` 的 exclude）。"""
+    iid = _one(client)
+    for _ in range(2):
+        r = client.post("/api/images/batch-tags", json={"items": [
+            {"id": iid, "tags": ["B5-1"], "name": "w1+w2-A-6-1"}]})
+        assert r.status_code == 200
+    assert _names(client)[iid] == "w1+w2-A-6-1"

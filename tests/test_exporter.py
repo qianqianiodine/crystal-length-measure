@@ -403,18 +403,41 @@ def _plan(conn, ids, members):
     return exporter.export_plan(images, folders, members)
 
 
+def test_导出计划_文件名用照片名字(树):
+    """用户 2026-10-06 报的：填了「编号」的照片，导出文件名里必须带着编号。
+
+    名字是「编号-行-列-孔」（上传/打标签时拼的，`w1+w2-A-6-1`），编号就在名字里；
+    `tags` 只存孔位（`A6-1`）—— 文件名取 tags 的话编号就没了。
+    """
+    conn, f = 树
+    iid = db.create_image(conn, "w1+w2-A-6-1", "image.jpg", "t.png", "mobile")
+    db.update_image(conn, iid, tags='["A6-1"]')
+    计划 = _plan(conn, [iid], {iid: [f["a"]]})
+    assert 计划 == [{"image_id": iid, "parts": ["样品A"],
+                     "name": "样品A_w1+w2-A-6-1.png", "renamed": False}]
+
+
 def test_导出计划_文件夹名做前缀(树):
     conn, f = 树
     iid = db.create_image(conn, "照片", "IMG_2201.jpg", "t.png", "upload")
     db.update_image(conn, iid, tags='["A1-1"]')
     计划 = _plan(conn, [iid], {iid: [f["a"]]})
     assert 计划 == [{"image_id": iid, "parts": ["样品A"],
-                     "name": "样品A_A1-1.png", "renamed": False}]
+                     "name": "样品A_照片.png", "renamed": False}]
 
 
-def test_导出计划_没标签就用原文件名(树):
+def test_导出计划_标签不会再顶掉名字(树):
+    """孔位标签是"在哪个孔"的标记，**不进文件名** —— 文件名认的名字，
+    只有名字。上面那条测试带了标签，这条不带，两者出来的名字必须一样。"""
     conn, f = 树
     iid = db.create_image(conn, "照片", "IMG_2201.jpg", "t.png", "upload")
+    计划 = _plan(conn, [iid], {iid: [f["a"]]})
+    assert 计划[0]["name"] == "样品A_照片.png"
+
+
+def test_导出计划_名字为空才退回原文件名(树):
+    conn, f = 树
+    iid = db.create_image(conn, "", "IMG_2201.jpg", "t.png", "upload")
     计划 = _plan(conn, [iid], {iid: [f["a"]]})
     assert 计划[0]["name"] == "样品A_IMG_2201.png"
 
@@ -425,7 +448,7 @@ def test_导出计划_未分类的单独一层且不加前缀(树):
     db.update_image(conn, iid, tags='["A1-1"]')
     计划 = _plan(conn, [iid], {iid: []})
     assert 计划 == [{"image_id": iid, "parts": ["未分类"],
-                     "name": "A1-1.png", "renamed": False}]
+                     "name": "照片.png", "renamed": False}]
 
 
 def test_导出计划_套层照搬(树):
@@ -433,7 +456,7 @@ def test_导出计划_套层照搬(树):
     iid = db.create_image(conn, "照片", "IMG_1.jpg", "t.png", "upload")
     计划 = _plan(conn, [iid], {iid: [f["b"]]})
     assert 计划[0]["parts"] == ["样品A", "6月批次"]
-    assert 计划[0]["name"] == "6月批次_IMG_1.png"
+    assert 计划[0]["name"] == "6月批次_照片.png"
 
 
 def test_导出计划_一张图两个文件夹就两份(树):
@@ -447,15 +470,14 @@ def test_导出计划_一张图两个文件夹就两份(树):
 
 
 def test_导出计划_重名自动加序号(树):
-    """跨照片重复填 A1-1 是允许的（设计 §六 第 8 条），
+    """两张照片可以叫同一个名字（库里 name 没有唯一约束），
     但**同一次导出绝不静默覆盖** —— 那会悄悄丢掉一张已经量好的图。"""
     conn, f = 树
-    a = db.create_image(conn, "甲", "IMG_1.jpg", "t.png", "upload")
-    b = db.create_image(conn, "乙", "IMG_2.jpg", "t.png", "upload")
-    db.update_image(conn, a, tags='["A1-1"]')
-    db.update_image(conn, b, tags='["A1-1"]')
+    a = db.create_image(conn, "w1+w2-A-6-1", "image.jpg", "t.png", "mobile")
+    b = db.create_image(conn, "w1+w2-A-6-1", "image.jpg", "t.png", "mobile")
     计划 = _plan(conn, [a, b], {a: [f["a"]], b: [f["a"]]})
-    assert [p["name"] for p in 计划] == ["样品A_A1-1.png", "样品A_A1-1 (2).png"]
+    assert [p["name"] for p in 计划] == ["样品A_w1+w2-A-6-1.png",
+                                        "样品A_w1+w2-A-6-1 (2).png"]
     assert [p["renamed"] for p in 计划] == [False, True]
 
 
@@ -468,9 +490,7 @@ def test_导出计划_只有大小写不同的文件夹也算撞名(树):
     conn, f = 树
     小写 = db.create_folder(conn, "样品a", None)     # 和 f["a"]（样品A）只差大小写
     x = db.create_image(conn, "甲", "IMG_1.jpg", "t.png", "upload")
-    y = db.create_image(conn, "乙", "IMG_2.jpg", "t.png", "upload")
-    db.update_image(conn, x, tags='["A1-1"]')
-    db.update_image(conn, y, tags='["A1-1"]')
+    y = db.create_image(conn, "甲", "IMG_2.jpg", "t.png", "upload")
     计划 = _plan(conn, [x, y], {x: [f["a"]], y: [小写]})
 
     # 性质：plan 里任意两条都不能落到大小写不敏感下的同一个路径
@@ -479,8 +499,8 @@ def test_导出计划_只有大小写不同的文件夹也算撞名(树):
 
     # 去重是加了序号，写出去的文件名仍保留用户原来的大小写
     assert [p["parts"][0] for p in 计划] == ["样品A", "样品a"]
-    assert 计划[0]["name"] == "样品A_A1-1.png"
-    assert 计划[1]["name"] == "样品a_A1-1 (2).png"
+    assert 计划[0]["name"] == "样品A_甲.png"
+    assert 计划[1]["name"] == "样品a_甲 (2).png"
     assert [p["renamed"] for p in 计划] == [False, True]
 
 

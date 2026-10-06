@@ -359,7 +359,7 @@ UNCATEGORIZED = "未分类"
 def export_plan(images, folders, members) -> list[dict]:
     """算清楚每一张图导出到哪、叫什么名字。**纯函数，不碰磁盘。**
 
-    images:  sqlite3.Row 列表，每行要 id / original_filename / tags
+    images:  sqlite3.Row 列表，每行要 id / name / original_filename
     folders: sqlite3.Row 列表，每行要 id / name / parent_id（整张 folders 表）
     members: {image_id: [folder_id, ...]}
 
@@ -367,10 +367,10 @@ def export_plan(images, folders, members) -> list[dict]:
       - parts 是目录层次（每段都洗过），`["样品A","6月批次"]` = 两层
       - name 是文件名（已洗干净、已去重），带 `.png`
       - 一张图在几个文件夹里就有几条（多对多如实摊开，不替用户挑一个）
-      - 没归档的放「未分类」一层，**不加前缀**（那是用户的原始文件名更好认）
+      - 没归档的放「未分类」一层，**不加前缀**（照片名字更好认）
 
     ⚠️ 文件名前缀用的是**直接父文件夹**的名字，不是整条路径 ——
-    `样品A/6月批次/A1-1` 出来是 `6月批次_A1-1.png`。
+    `样品A/6月批次/w1+w2-A-6-1` 出来是 `6月批次_w1+w2-A-6-1.png`。
     """
     by_id = {r["id"]: r for r in folders}
 
@@ -390,9 +390,11 @@ def export_plan(images, folders, members) -> list[dict]:
     used: set[str] = set()             # 这次导出里已经用掉的相对路径
 
     for img in images:
-        tags = parse_tags(img["tags"])
-        # 有标签就用标签，没有就用原文件名（去掉扩展名，后面统一加 .png）
-        stem = tags[0] if tags else Path(img["original_filename"]).stem
+        # 用**照片名字** —— 界面上写什么，导出的文件就叫什么。
+        # 「编号」只存在名字里（上传时填了编号就是「编号-行-列-孔」，如 `w1+w2-A-6-1`）；
+        # 以前这里取 tags[0]，那只存孔位（`A6-1`），编号就丢了 —— 用户 2026-10-06 报的
+        # 「文件名里没有编号」正是这一处。名字为空（理论上不该有）才退回原文件名。
+        stem = (img["name"] or "").strip() or Path(img["original_filename"]).stem
 
         dirs = [folder_path(f) for f in members.get(img["id"], [])]
         if not dirs:

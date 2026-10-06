@@ -700,6 +700,30 @@ def test_phone_page_has_the_pending_ui(client):
     assert "/imports" in html
 
 
+def test_手机页不许被浏览器缓存(client):
+    """`Cache-Control: no-store`。
+
+    手机页整个存在服务端内存里（`_PAGE`），改完不重启就不变；而这个响应**没有
+    任何校验标记**（没有 ETag / Last-Modified），浏览器拿到一份就可能一直用自己
+    缓存的那份。用户 2026-10-06 就报过"重启了，手机上还是老样子"。
+    """
+    token = main.app.state.mobile_token
+    r = client.get(f"/m/{token}")
+    assert r.headers.get("cache-control") == "no-store"
+
+
+def test_手机页有传送记录那块(client):
+    """传送记录那一块要**一直在**，不能"空的就藏起来"。
+
+    用户 2026-10-06 报"重启了也没更新"时，新页面其实已经在他手机上了 ——
+    只是这一块当时整块藏着，屏幕上和旧的**一模一样**，没法判断。
+    """
+    token = main.app.state.mobile_token
+    html = client.get(f"/m/{token}").text
+    assert 'id="sent"' in html and 'id="list"' in html
+    assert 'id="sent" hidden' not in html
+
+
 # ---------------- 改名要把红字清掉 / 确认导入不能同时跑两遍 ----------------
 
 def test_renaming_a_failed_row_clears_its_red_text(client):
@@ -963,6 +987,38 @@ def test_上传时带一个不存在的folder_当不放进文件夹(client):
 def test_上传不带folder_就是不放进文件夹(client):
     _two_pending(client)
     assert all(it["folder_id"] is None for it in _pending(client)["items"])
+
+
+def test_单张上传_direct_也进那个文件夹(client):
+    """单张导入走 direct（不进待确认列表），folder 也得认。
+
+    用户 2026-10-06 报的：图库里选着某个文件夹点「导入照片」，传一张进去还是落进
+    「未分类」、只在「全部照片」里看得见 —— `_ingest` 的 direct 那一路调
+    `_import_one` 时把 folder 丢了（pending 那一路是有的）。
+    """
+    fid = _mk_folder(client, "样品A")
+    r = client.post(f"/api/images/upload?folder={fid}", files=[
+        ("files", ("单张.png", _png(), "image/png"))])
+    assert r.status_code == 200, r.text
+    assert r.json()["ok"][0]["folders"] == [fid]
+    d = client.get("/api/images").json()
+    assert d["total"] == 1 and d["items"][0]["folders"] == [fid]
+
+
+def test_单张上传_不带folder_就是不放进文件夹(client):
+    """图库停在「全部照片」或「未分类」时本来就不传 folder —— 照旧不归文件夹。"""
+    r = client.post("/api/images/upload", files=[
+        ("files", ("单张.png", _png(), "image/png"))])
+    assert r.status_code == 200, r.text
+    assert r.json()["ok"][0]["folders"] == []
+
+
+def test_单张上传_带一个不存在的folder_照片照样进库(client):
+    """文件夹在两次请求之间被删了：照片还是要收下，只是不归文件夹（不能 500）。"""
+    r = client.post("/api/images/upload?folder=99999", files=[
+        ("files", ("单张.png", _png(), "image/png"))])
+    assert r.status_code == 200, r.text
+    assert r.json()["ok"][0]["folders"] == []
 
 
 def test_名字像孔位就同时存成标签(client):

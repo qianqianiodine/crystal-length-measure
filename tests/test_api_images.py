@@ -173,6 +173,15 @@ def test_rename_duplicate_gets_suffix(client):
     assert client.patch(f"/api/images/{iid}", json={"name": "甲"}).json()["name"] == "甲 (2)"
 
 
+def test_rename_to_own_name_keeps_it(client):
+    """改成**自己此刻的名字**不算撞名 —— 否则敲一遍原名回车就平白多个 " (2)"，
+    而且打标签对话框每次点确定都会把预填的编号重拼成名字发一遍（2026-10-06 加的预填），
+    少了这条护栏就是"每点一次确定名字长一截"。"""
+    iid = _upload(client, "甲.png").json()["ok"][0]["id"]
+    assert client.patch(f"/api/images/{iid}", json={"name": "甲"}).json()["name"] == "甲"
+    assert client.patch(f"/api/images/{iid}", json={"name": "甲"}).json()["name"] == "甲"
+
+
 # ---------------- 删除 ----------------
 
 def test_delete_moves_file_to_trash(client):

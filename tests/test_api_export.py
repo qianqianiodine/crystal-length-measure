@@ -65,7 +65,11 @@ def _out_dir(j) -> "config.Path":
 # ---------------- 批量导出图片 ----------------
 
 def test_导出图片_建出文件夹和文件(client):
-    """最全的一条：两层文件夹 + 标签命名 + 没标签时退回原文件名。"""
+    """最全的一条：两层文件夹 + 用照片名字当文件名。
+
+    ⚠️ 名字**不是**从标签来的：两张图分别叫 `照片` / `照片 (2)`（上传时
+    `_unique_name` 给的重名后缀），导出就得是这个 —— 标签只在库里，不进文件名。
+    """
     from app import db
 
     a = client.post("/api/folders", json={"name": "样品A", "parent_id": None}).json()
@@ -90,8 +94,8 @@ def test_导出图片_建出文件夹和文件(client):
     assert j["count"] == 2 and j["renamed"] == 0 and j["failed"] == []
 
     d = _out_dir(j)
-    assert (d / "样品A" / "6月批次" / "6月批次_A1-1.png").is_file()
-    assert (d / "样品A" / "6月批次" / "6月批次_照片.png").is_file()   # 没标签的用原文件名
+    assert (d / "样品A" / "6月批次" / "6月批次_照片.png").is_file()
+    assert (d / "样品A" / "6月批次" / "6月批次_照片 (2).png").is_file()   # 第二张的重名后缀
 
 
 def test_导出图片_每个文件都是能打开的_PNG(client):

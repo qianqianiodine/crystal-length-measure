@@ -727,12 +727,15 @@ function makeCard(it) {
   file.addEventListener('click', () => archiveImage(it));
 
   // 标签：既是"这个孔是哪一个"的信息，也是改它的入口。和「归档…」并排。
+  // 标上了就显示**照片名字**，不是光显示孔位 —— 名字里带着上传时填的「编号」
+  // （`w1+w2-A-6-1`），只写 `A6-1` 的话用户在卡片上找不到自己的编号。
+  // 导出的文件名用的是同一个字符串，见 app/exporter.py 的 export_plan()。
   const tag = document.createElement('button');
   tag.type = 'button';
   tag.className = 'file';
   const t0 = (it.tags || [])[0];
   if (t0) {
-    tag.textContent = t0;
+    tag.textContent = it.name;
     tag.title = '点击改孔位标签';
   } else {
     tag.textContent = '标签…';
@@ -1916,11 +1919,17 @@ const TAG_ROWS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
 const TAG_COLS = Array.from({ length: 12 }, (_, i) => String(i + 1));
 const TAG_HOLES = ['孔1', '孔2'];   // 短标签：下拉宽度是按最长的那个选项算的
 
-function mkSelect(options, cur) {
+// `withBlank=false`：这一栏没有「不选」这一档，永远有个值（孔位就是，
+// 见下面 selH —— 用户 2026-10-06 要求：不选就当孔1）。
+// ⚠️ 那时 `cur` 必须真在 options 里：浏览器把 select.value 设成不存在的值时
+//    会静默变成空串，那一栏就"看着选了、其实没选"。
+function mkSelect(options, cur, withBlank = true) {
   const s = document.createElement('select');
-  const blank = document.createElement('option');
-  blank.value = ''; blank.textContent = '—';      // 不标
-  s.append(blank);
+  if (withBlank) {
+    const blank = document.createElement('option');
+    blank.value = ''; blank.textContent = '—';      // 不标
+    s.append(blank);
+  }
   for (const o of options) {
     const op = document.createElement('option');
     op.value = o; op.textContent = o;
@@ -1931,9 +1940,12 @@ function mkSelect(options, cur) {
 }
 
 // 存成 "A1-1"：行 + 列 + '-' + 第几个孔。三个下拉都选了才算一个完整标签。
+// 三个下拉 → "A1-1"。行或列没选 = 不标。
+// ⚠️ 孔位那一栏**没有「不选」**（用户 2026-10-06：不选就当孔1），所以不拿它判空 ——
+//    默认写成"不是孔2就是孔1"：真出了空值也只会算成孔1，不会拼出 `A1-2` 那种东西。
 function tagOf(selA, selN, selH) {
-  if (!selA.value || !selN.value || !selH.value) return '';
-  return `${selA.value}${selN.value}-${selH.value === '孔1' ? 1 : 2}`;
+  if (!selA.value || !selN.value) return '';
+  return `${selA.value}${selN.value}-${selH.value === '孔2' ? 2 : 1}`;
 }
 
 // 「编号」+ 孔位 = 照片名字：编号 20260923-29 + 孔位 B5 孔1 → 20260923-29-B-5-1。
@@ -1948,6 +1960,24 @@ function nameWithPlate(no, tag) {
   return m ? `${no}-${m[1]}-${m[2]}-${m[3]}` : no;
 }
 
+// nameWithPlate() 的逆：从照片名字里把「编号」拆回来，预填进对话框那个框。
+// `pi-minimal-A-4-1` + 孔位 `A4-1` → `pi-minimal`（用户 2026-10-06 要求预填）。
+// 不预填的话，他只改个孔位一点确定，名字里原来的编号就被抹掉了。
+// ⚠️ 拆不出来**必须返回空串**，绝不能返回整条名字 —— 那样一点确定就会把名字
+//    改成 `image-A-5-1` 这种东西。空串 = 服务端一个字都不改（老的安全行为）。
+function plateNoOf(name, tag) {
+  const m = /^([A-H])(\d{1,2})-([12])$/.exec(tag || '');
+  if (!m) return '';
+  const n = (name || '').trim();
+  // 先按带孔号的拆（现在拼的就是这个）；老名字可能没写孔号（`28-A-5`），也认。
+  for (const suffix of [`-${m[1]}-${m[2]}-${m[3]}`, `-${m[1]}-${m[2]}`]) {
+    if (!n.endsWith(suffix)) continue;
+    const plate = n.slice(0, -suffix.length);
+    if (plate) return plate;
+  }
+  return '';
+}
+
 async function tagImages(items) {
   const wrap = document.createElement('div');
   const list = document.createElement('div');
@@ -1959,6 +1989,8 @@ async function tagImages(items) {
   // ⚠️ 上面这个一改是**覆盖所有行**（和「整批文件夹」同一个规矩，
   //    好处是用户看得见每一行都跟着动，不会误以为只改了第一行）。
   //    所以真想单独改的行，要放在最后改。
+  // ⚠️ **只有多选时才画**（用户 2026-10-06）：单张照片就一行，那一行自己就有编号框，
+  //    上面再挂一个"覆盖所有行"的框只会碍事（那时它覆盖的也就是那一行）。
   const bb = document.createElement('div');
   bb.className = 'tagBatch';
   const bl = document.createElement('label');
@@ -1974,7 +2006,8 @@ async function tagImages(items) {
   });
   bl.append(bno);
   bb.append(bl);
-  wrap.append(bb, list);
+  if (items.length > 1) wrap.append(bb, list);
+  else wrap.append(list);
 
   for (const it of items) {
     const row = document.createElement('div');
@@ -1989,7 +2022,13 @@ async function tagImages(items) {
     nm.className = 'tagName';
     nm.textContent = it.name;      // textContent：名字是用户打的，别走 innerHTML
 
-    // 晶体板编号。留空 = 这张不改名字（还是老样子，只写标签）。
+    // 已有的标签拆回三个下拉。不自动编号、不猜顺序 —— 用户对着缩略图一张张选。
+    const tag0 = (it.tags || [])[0] || '';
+    const m = /^([A-H])(\d{1,2})-([12])$/.exec(tag0);
+
+    // 晶体板编号：**把名字里已有的编号拆回来填上**（用户 2026-10-06 要求）。
+    // 不预填的话，他只改个孔位一点确定，名字里原来的编号就被抹掉了。
+    // 留空 = 这张不改名字（还是老样子，只写标签）；拆不出来就留空。
     const no = document.createElement('input');
     no.type = 'text';
     no.className = 'tagNo';
@@ -1998,12 +2037,14 @@ async function tagImages(items) {
     no.maxLength = 60;
     no.autocomplete = 'off';
     no.spellcheck = false;
+    no.value = plateNoOf(it.name, tag0);
 
-    // 已有的标签拆回三个下拉。不自动编号、不猜顺序 —— 用户对着缩略图一张张选。
-    const m = /^([A-H])(\d{1,2})-([12])$/.exec((it.tags || [])[0] || '');
     const selA = mkSelect(TAG_ROWS, m ? m[1] : '');
     const selN = mkSelect(TAG_COLS, m ? m[2] : '');
-    const selH = mkSelect(TAG_HOLES, m ? (m[3] === '1' ? '孔1' : '孔2') : '');
+    // 孔位这一栏没有「不选」：没标过的默认停在孔1（用户 2026-10-06）——
+    // 于是"行 + 列选上就算标好了"，不用再去点第三个下拉。
+    const selH = mkSelect(TAG_HOLES, m ? (m[3] === '1' ? '孔1' : '孔2') : TAG_HOLES[0],
+                          false);
     row.append(im, nm, no, selA, selN, selH);
 
     row._get = () => tagOf(selA, selN, selH);
@@ -2039,10 +2080,10 @@ async function tagImages(items) {
 
   const picked = await ask(
     items.length > 1 ? `给这 ${items.length} 张打标签` : `「${items[0].name}」是哪个孔`,
-    '第一个下拉是行、第二个是列、第三个是同一个池里的第几个孔。'
-    + '三个都选才算标上；选「—」就是不标。'
-    + '「编号」填了这张就改名成「编号-行-列-孔」（像 20260923-29-B-5-1），留空就不动名字；'
-    + '上面那个框一改，下面每行都跟着变。',
+    '第一个下拉是行、第二个是列、第三个是同一个池里的第几个孔（不选就当孔1）。'
+    + '行和列都选上就标好了；想不标就把行或列留成「—」。'
+    + '「编号」填了这张就改名成「编号-行-列-孔」（像 20260923-29-B-5-1），留空就不动名字。'
+    + (items.length > 1 ? '上面那个框一改，下面每行都跟着变。' : ''),
     wrap,
     [{ label: '取消', value: null },
      { label: '确定', pick: collect, check: checkDup }]);

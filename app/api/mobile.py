@@ -118,6 +118,16 @@ _PAGE = """<!doctype html>
   #pend[hidden] { display: none; }
   #pend { margin-top: 26px; border-top: 1px solid var(--rule); padding-top: 18px; }
   #pend h2 { font-size: 15px; font-weight: 600; margin: 0 0 12px; color: var(--ref); }
+  /* 传送记录。和「待确认导入」同一个样子 —— 两块是上下叠着的，长得不一样会更乱。
+     ⚠️ 那条 [hidden] 必须有：下面给了 display 的话，hidden 就压不住它了
+     （图库页的 #empty 踩过同一个坑）。 */
+  /* ⚠️ 这一块**永远显示**（不像「待确认导入」是空的就藏起来）：一是让用户知道
+     记录会出现在哪儿，二是"手机上到底更新了没有"靠它一眼就能看出来 ——
+     2026-10-06 用户报过"重启了也没更新"，其实只是这一块当时是藏着的。 */
+  #sent { margin-top: 26px; border-top: 1px solid var(--rule); padding-top: 18px; }
+  #sent h2 { font-size: 15px; font-weight: 600; margin: 0 0 12px; color: var(--ref); }
+  #sent ul { margin-top: 0; }
+  #sent .none { color: var(--mute); font-size: 13.5px; margin: 0; }
   .pfxrow { display: block; color: var(--mute); font-size: 13.5px; margin-bottom: 14px; }
   /* 整批那个「这批照片放到」。不写样式的话它是个系统白色的原生下拉，
      在深色页面上像贴上去的一块 —— 用户说这页"有点混乱"就有它一份。 */
@@ -181,7 +191,11 @@ _PAGE = """<!doctype html>
     </div>
   </section>
 
-  <ul id="list"></ul>
+  <section id="sent">
+    <h2>传送记录（<span id="sn">0</span> 张）</h2>
+    <p class="none" id="sempty">还没传过 —— 传过的照片会一条条记在这儿，带上你起的名字。</p>
+    <ul id="list"></ul>
+  </section>
   <p class="tail" id="tail"></p>
 </main>
 
@@ -191,6 +205,78 @@ const btn = document.getElementById('btn');
 const input = document.getElementById('f');
 const list = document.getElementById('list');
 const tail = document.getElementById('tail');
+const sn = document.getElementById('sn');
+const sempty = document.getElementById('sempty');
+
+// ---------- 传送记录 ----------
+// 这次打开页面（同一个浏览器标签）以来传过的**全部**照片，一条一条往下摞。
+// 用户 2026-10-06 要的：批量、拍照、混着来都记在同一份里；每条写它的名字 ——
+// 下面填了「编号」+ 孔位，上面这条就变成「编号-行-列-孔」。
+// ⚠️ 上一版每传一批就 `list.innerHTML = ''`，传完 3 张再拍一张，前 3 条就没了。
+// ⚠️ 存 sessionStorage，不是只放内存：手机锁屏常常让页面自己重载一下，
+//    不存的话记录会**悄悄清零**，用户还以为自己没传上去。关掉标签页、或者重新
+//    扫码（新开的标签）就重新开始 —— 用户要的"随打开清空"。
+// ⚠️ 「确认导入」**不**清空它（用户指定）：记录是"我传过什么"，
+//    不是"还差什么没确认"—— 后者是下面那个待确认列表的活。
+const SENT_KEY = 'jltx.sent';
+let SENT = [];
+try {
+  SENT = JSON.parse(sessionStorage.getItem(SENT_KEY) || '[]');
+  if (!Array.isArray(SENT)) SENT = [];
+} catch (e) {
+  SENT = [];        // 存坏了、或者浏览器禁了 sessionStorage —— 当没有，不能白屏
+}
+
+function saveSent() {
+  try { sessionStorage.setItem(SENT_KEY, JSON.stringify(SENT)); } catch (e) {}
+}
+
+function paintSent() {
+  list.innerHTML = '';
+  for (const r of SENT) {
+    const li = document.createElement('li');
+    if (r.cls) li.classList.add(r.cls);
+    const n = document.createElement('span');
+    n.className = 'n';
+    n.textContent = r.name;        // textContent：名字是用户打的，别走 innerHTML
+    const s = document.createElement('span');
+    s.className = 's';
+    s.textContent = r.st;
+    li.append(n, s);
+    if (r.why) {
+      const w = document.createElement('span');
+      w.className = 'why';
+      w.textContent = r.why;
+      li.append(w);
+    }
+    list.append(li);
+  }
+  sempty.hidden = !!SENT.length;      // 有记录了就把"还没传过"那句收起来
+  sn.textContent = String(SENT.length);
+}
+
+// 名字跟着「待确认列表」走：下面填了编号 + 孔位 → 上面这条跟着变成那个名字。
+// 挂在 paintPend() 里 —— 那一页所有重画最后都会走到它（放 edit/patch 各处会漏）。
+function syncSentNames() {
+  const byId = new Map((P.items || []).map(it => [it.id, it]));
+  let changed = false;
+  for (const r of SENT) {
+    const it = r.pid ? byId.get(r.pid) : null;
+    if (it && it.name && it.name !== r.name) { r.name = it.name; changed = true; }
+  }
+  if (changed) saveSent();
+  paintSent();
+}
+
+// 这一行离开待确认列表了，记录里那一条换个状态（入库 / 移除 / 取消）。
+function markSent(ids, st, cls) {
+  const set = new Set(ids);
+  for (const r of SENT) {
+    if (r.pid !== null && set.has(r.pid)) { r.st = st; r.cls = cls; }
+  }
+  saveSent();
+  paintSent();
+}
 
 input.addEventListener('change', async () => {
   const files = [...input.files];
@@ -199,19 +285,21 @@ input.addEventListener('change', async () => {
 
   btn.classList.add('busy');
   btn.firstChild.textContent = '正在传…';
-  list.innerHTML = '';
   let done = 0, bad = 0;
 
   // 手机上**恒为 pending**：单张也要停下来选文件夹、填孔位。
   // （电脑端不一样 —— 那边一个请求带多个文件，≥2 张才进列表。）
   const mode = 'pending';
 
-  // 一张一张传 —— 手机上看得见进度，也不用把整批堆在内存里
+  // 一张一张传 —— 手机上看得见进度，也不用把整批堆在内存里。
+  // 每张先在**传送记录**里占一行：名字暂时用手机文件名，等用户在下面填好
+  // 编号 + 孔位，syncSentNames() 会把它改成「编号-行-列-孔」。
+  // ⚠️ 不在这里清空记录 —— 上一批那几条要一直留着（用户 2026-10-06 要的）。
   for (const file of files) {
-    const li = document.createElement('li');
-    li.innerHTML = '<span class="n"></span><span class="s">上传中</span>';
-    li.querySelector('.n').textContent = file.name;
-    list.append(li);
+    const rec = { pid: null, name: file.name, st: '上传中', cls: '', why: '' };
+    SENT.push(rec);
+    saveSent();
+    paintSent();
 
     try {
       const fd = new FormData();
@@ -221,26 +309,26 @@ input.addEventListener('change', async () => {
       const r = await fetch(`/m/${token}/upload?${q}`, { method: 'POST', body: fd });
       const d = await r.json();
       if (r.ok && d.ok && d.ok.length) {
-        li.classList.add('ok');
-        li.querySelector('.s').textContent = '已传到电脑';
+        rec.name = d.ok[0].name || file.name;
+        rec.st = '已传到电脑';
         done++;
       } else if (r.ok && d.staged && d.staged.length) {
-        li.classList.add('ok');
-        li.querySelector('.s').textContent = '进了待确认列表';
+        rec.pid = d.staged[0].id;      // 记住它，下面改名时要回来改这条记录
+        rec.name = d.staged[0].name || file.name;
+        rec.st = '已传到电脑';
         done++;
       } else {
         throw new Error((d.failed && d.failed[0] && d.failed[0].reason)
                         || d.detail || '没传上去');
       }
     } catch (err) {
-      li.classList.add('bad');
-      li.querySelector('.s').textContent = '失败';
-      const why = document.createElement('span');
-      why.className = 'why';
-      why.textContent = err.message;
-      li.append(why);
+      rec.cls = 'bad';
+      rec.st = '失败';
+      rec.why = err.message;
       bad++;
     }
+    saveSent();
+    paintSent();
   }
 
   btn.classList.remove('busy');
@@ -311,6 +399,10 @@ function pAdopt(d) {
 function paintPend() {
   FOLDERS = P.folders || [];
   paintBatchFolder();
+  // 传送记录里的名字跟着这张表走（改名是在这张表上改的）。
+  // ⚠️ 必须在这句 return **之前** —— 导完最后一张时 P.items 是空的，
+  //    放后面的话最后一次改名就同步不过去了。
+  syncSentNames();
   const ok = P.items.filter(i => i.status === 'ok').length;
   pend.hidden = !P.items.length;
   if (!P.items.length) return;
@@ -373,7 +465,7 @@ function pendRow(it) {
   rm.addEventListener('click', async () => {
     await pFlushNames();       // 整表重画之前，先把别的行刚打的字发出去
     const d = await pj(`/m/${token}/imports/${it.id}`, 'DELETE');
-    if (d) { pAdopt(d); }
+    if (d) { markSent([it.id], '已移除', ''); pAdopt(d); }
   });
   top.append(rm);
 
@@ -400,7 +492,8 @@ function pendRow(it) {
   const m = /^([A-H])([1-9]|1[0-2])-([12])$/.exec((it.tags || [])[0] || '');
   const selA = mkSel(ROWS, m ? m[1] : '');
   const selN = mkSel(COLS, m ? m[2] : '');
-  const selH = mkSel(HOLES, m ? (m[3] === '1' ? '孔1' : '孔2') : '');
+  // 孔位没有「不选」这一档：没标过的默认停在孔1（用户 2026-10-06）。
+  const selH = mkSel(HOLES, m ? (m[3] === '1' ? '孔1' : '孔2') : HOLES[0], false);
   for (const s of [selA, selN, selH]) {
     s.addEventListener('change', async () => {
       await pFlushNames();     // 同上：重画之前先把排队的名字发出去
@@ -520,18 +613,22 @@ function folderValue(sel) {
 }
 
 // ---------- 孔位（行 / 列 / 第几个孔） ----------
-// 和图库打标签对话框里那三个下拉是同一套：三个都选了才算一个完整孔位，
-// 存成 A1-1 那个形状（`_TAG_RE` 只认这一种）。全选「—」= 不标。
+// 和图库打标签对话框里那三个下拉是同一套：行 + 列选上就算一个完整孔位
+// （孔位那栏不选就当孔1），存成 A1-1 那个形状（`_TAG_RE` 只认这一种）。
+// 行或列选「—」= 不标。
 const ROWS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
 const COLS = Array.from({ length: 12 }, (_, i) => String(i + 1));
 const HOLES = ['孔1', '孔2'];
 
-function mkSel(options, cur) {
+// `withBlank=false`：这一栏没有「不选」这一档（孔位就是，见下面 selH）。
+function mkSel(options, cur, withBlank = true) {
   const s = document.createElement('select');
   s.className = 'tg';
-  const blank = document.createElement('option');
-  blank.value = ''; blank.textContent = '—';      // 不标
-  s.append(blank);
+  if (withBlank) {
+    const blank = document.createElement('option');
+    blank.value = ''; blank.textContent = '—';      // 不标
+    s.append(blank);
+  }
   for (const o of options) {
     const op = document.createElement('option');
     op.value = o; op.textContent = o;
@@ -542,16 +639,18 @@ function mkSel(options, cur) {
   return s;
 }
 
-// 三个下拉 → "A1-1"。没选全就是空串（不标）。
+// 三个下拉 → "A1-1"。行或列没选就是空串（不标）。
+// ⚠️ 孔位那一栏没有「不选」（用户 2026-10-06：不选就当孔1），所以不拿它判空 ——
+// 默认写成"不是孔2就是孔1"，真出了空值也只会算成孔1。
 function tagOf(a, n, h) {
-  if (!a.value || !n.value || !h.value) return '';
-  return `${a.value}${n.value}-${h.value === '孔1' ? 1 : 2}`;
+  if (!a.value || !n.value) return '';
+  return `${a.value}${n.value}-${h.value === '孔2' ? 2 : 1}`;
 }
 
 // 「编号」+ 孔位 = 名字：编号 20260923-29 + 孔位 B5 孔1 → 20260923-29-B-5-1。
 // 和图库打标签对话框里那条 nameWithPlate() 是同一个规则（名字尾巴带孔号，
 // 不然同一个池的两个孔会拼出一模一样的名字，在列表里分不出谁是谁）。
-// 三个下拉没选全时名字就只剩编号本身 —— 用户填了编号就照他填的来。
+// 行或列没选时名字就只剩编号本身 —— 用户填了编号就照他填的来。
 function nameWithPlate(no, tag) {
   // ⚠️ 没填编号就返回空串（= 不改名字）。少了这一行，空编号 + 选好的孔位会
   // 拼出一个 "-B-3-1" 发出去 —— 用户没碰编号，名字却被改成了个横杠开头的怪东西。
@@ -593,6 +692,7 @@ document.getElementById('pok').addEventListener('click', async () => {
     // 先把 400ms 内刚打的名字发出去：确认要带着它。
     // 晚一步的话整批照片按旧名字入库，用户完全看不出来。
     await pFlushNames();
+    const before = P.items.map(i => i.id);   // 这批是谁 —— 确认完它们就不在列表里了
     const d = await pj(`/m/${token}/imports/confirm`, 'POST', {});
     if (!d) { tail.textContent = pjError || '没成功，再点一次试试'; return; }
     const msgs = [];
@@ -601,6 +701,9 @@ document.getElementById('pok').addEventListener('click', async () => {
     if (d.skipped) msgs.push(`${d.skipped} 张没成功的跳过了`);
     tail.textContent = msgs.join('；') || '没什么要导入的';
     await loadPend();
+    // 真离开待确认列表的那些才算入库（没成功的那几张会留下来，不能一起标）
+    const still = new Set(P.items.map(i => i.id));
+    markSent(before.filter(id => !still.has(id)), '已导入', 'ok');
   } finally {
     pok.disabled = false;
     pok.textContent = '确认导入';
@@ -609,11 +712,14 @@ document.getElementById('pok').addEventListener('click', async () => {
 
 document.getElementById('pno').addEventListener('click', async () => {
   if (!confirm(`取消后这 ${P.items.length} 张要重新传一遍，确定吗？`)) return;
+  const before = P.items.map(i => i.id);
   const d = await pj(`/m/${token}/imports`, 'DELETE');
   tail.textContent = d ? `已取消 ${d.cleared} 张` : '没成功，再点一次试试';
   await loadPend();
+  if (d) markSent(before, '已取消', '');    // 记录留着（传过就是传过），只换个状态
 });
 
+paintSent();         // 先把这次的传送记录画出来（存在 sessionStorage 里的）
 loadPend();          // 打开页面就先看有没有上次没确认的
 </script>
 </body>
@@ -626,7 +732,11 @@ def mobile_page(token: str) -> HTMLResponse:
     # 令牌不对的话中间件已经拦掉了；这里只要不是空就发页面
     if not token:
         raise HTTPException(404, "地址不对")
-    return HTMLResponse(_PAGE)
+    # ⚠️ `no-store`：这一页整个存在服务端内存里（`_PAGE`），改完必须重启才变。
+    # 而这个响应**没有任何校验标记**（没有 ETag / Last-Modified），手机浏览器拿到
+    # 一份就可能一直用自己缓存的那份 —— 用户"重启了，手机上还是老样子"十有八九是它。
+    # 桌面那两个页面是 FileResponse（自带 ETag），浏览器每次都会回来问，不用管。
+    return HTMLResponse(_PAGE, headers={"Cache-Control": "no-store"})
 
 
 @router.post("/m/{token}/upload")
