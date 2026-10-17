@@ -14,7 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
-from app import annotate, config, db, imageio, measure
+from app import annotate, config, db, imageio, measure, settings
 
 CSV_HEADER = [
     "图像名称", "图像唯一标识", "测量编号", "起点坐标", "终点坐标",
@@ -163,11 +163,17 @@ def build_annotated_image(conn, image_id: int, *,
             mapped.append(d)
         lines = mapped
 
+    # 图上字号 / 线宽 / 画布尺寸跟着测量页走 —— 图库缩略图和「导出图片」
+    # 都是这里画的，不读这两个设置就会和测量页直接导出的粗细、字大对不上
+    # （用户 2026-10-17 报的问题）。
+    style = settings.draw_style()
     return annotate.draw_annotations(
         base, lines, um_per_px, crop=crop, scale_bar=scale_bar,
         scale_bar_pos=scale_bar_pos, show_labels=show_labels,
         show_seq=show_seq, show_notes=show_notes, supersample=supersample,
         scale_bar_xy=scale_bar_xy,
+        font_px=style["font_px"], line_w=style["line_w"],
+        stage_w=style["stage_w"], stage_h=style["stage_h"],
     )
 
 
@@ -255,6 +261,7 @@ def export_image(conn, image_id: int) -> np.ndarray:
 
     if db.get_calibration(conn, image_id) is not None:
         # supersample=1 = 原始分辨率不缩小 —— 这是给论文 / PPT 用的，不是缩略图。
+        # （2026-10-17 用户实测：原图分辨率已经够清晰，不要为了"更大"浪费时间和磁盘。）
         #
         # ⚠️ **不要**用 try/except ValueError 来兜「没标定」那条路。
         # `annotate` 还会因为「导出的图太大了」（>4000 万像素，见 annotate.py 的

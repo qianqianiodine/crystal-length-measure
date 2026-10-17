@@ -547,6 +547,44 @@ def put_settings(body: SettingsIn) -> dict:
     return {"well_diameter_um": settings.set_well_diameter_um(v)}
 
 
+class StyleIn(BaseModel):
+    font_px: float | None = None
+    line_w: float | None = None
+    stage_w: float | None = None
+    stage_h: float | None = None
+
+
+@app.get("/api/settings/style")
+def get_draw_style() -> dict:
+    """当前画面风格：图上字号、线条粗细、测量页画布尺寸。"""
+    return settings.draw_style()
+
+
+@app.put("/api/settings/style")
+def put_draw_style(body: StyleIn, conn=Depends(get_db)) -> dict:
+    """测量页把「图上字号 / 线条粗细 / 画布尺寸」告诉服务端。
+
+    图库的缩略图和「导出图片」都是服务端画的（app/annotate.py）——
+    不共享这几个数，用户调完测量页，图库那边还是默认的 16/2，
+    导出的线和字和测量页直接导出的对不上（2026-10-17 用户报的就是这个）。
+    """
+    before = settings.draw_style()
+    try:
+        after = settings.set_draw_style(
+            font_px=body.font_px, line_w=body.line_w,
+            stage_w=body.stage_w, stage_h=body.stage_h)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    # 字号/线宽变了才作废缩略图；画布尺寸变（用户拉伸窗口）不动缓存 ——
+    # 缩略图就 320px，那点儿比例差看不出来，没必要让整面格子墙重画。
+    # 只作废**标定过**的图：没标定的缩略图是光图，本来就不受这些数影响。
+    if (after["font_px"], after["line_w"]) != (before["font_px"], before["line_w"]):
+        for row in conn.execute("SELECT image_id FROM calibrations"):
+            thumbs.drop(row["image_id"])
+    return after
+
+
 # ---------------- 页面 ----------------
 
 @app.get("/")

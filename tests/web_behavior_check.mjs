@@ -1131,6 +1131,15 @@ function toneChecks() {
         /function clampToPhoto\(/.test(code) && /const box = clampToPhoto\(S\.crop\)/.test(code)
         && /S\.crop = box;/.test(code) && /JSON\.stringify\(box\)/.test(code));
 
+  // —— 用户 2026-10-17：「在某个文件夹里面打开某个图片，在测量界面点图库返回的
+  //    时候是返回这个文件夹而不是全部图片的界面」。范围一直记在 S.scope 里，
+  //    只是那个按钮以前写死跳 `/gallery`，把它丢了。
+  check('R8 「图库」按钮带着当前文件夹范围（从文件夹进来，回去还是那个文件夹）',
+        (() => {
+          const m = code.match(/\$\('btnGallery'\)[\s\S]{0,400}/);
+          return !!m && m[0].includes("'/gallery'") && m[0].includes('S.scope');
+        })());
+
   // —— 图上那行字（用户 2026-09-23：先是反馈"看不清"调大了字号，
   //    然后要一个能同时管长度数字和标尺字的滑块）——
   //    守的是**只有一份字号**：导出不是另画一套，而是把屏幕上这套绘制用 uz()
@@ -1153,6 +1162,24 @@ function toneChecks() {
   // 否则勾了没反应（这次撤的时候把画编号/备注那两段一起删了）。
   check('C5 已撤掉的「显示测量编号 / 显示备注文字」没有半途回来',
         !/exSeq|exNotes/.test(html) && !/exSeq|exNotes/.test(code));
+
+  // —— 图库的线条/字号同步（用户 2026-10-17：「图库的照片的线条字号显示
+  //    好像没有跟测量界面的同步，导出也没有跟在测量界面直接导出的同步」）——
+  //    图库缩略图和批量导出都是**服务端**画的，所以测量页要把滑块值和画布尺寸
+  //    推过去；图库自己打开时也要把 localStorage 里的值再推一次（换浏览器、
+  //    或者先打开图库时，服务端才知道该用多粗）。
+  //    这两条只证明"还在推"，服务端按推送值画由 tests/test_annotate.py 与
+  //    tests/test_settings.py 钉住。
+  check('S1 测量页把字号/线宽/画布尺寸推给服务端',
+        /\/api\/settings\/style/.test(code)
+        && /stage_w:\s*SW,\s*stage_h:\s*SH/.test(code));
+  {
+    const g = readFileSync(join(ROOT, 'web', 'gallery.html'), 'utf8');
+    check('S2 图库加载前把 localStorage 里的字号/线宽推给服务端',
+          /jltx\.font/.test(g) && /jltx\.line/.test(g)
+          && /\/api\/settings\/style/.test(g)
+          && /pushStyle\(\)\.finally\(\(\) => \{ reload\(\); loadPending\(\); \}\)/.test(g));
+  }
 
   // —— 「关掉这张」：只把照片从屏幕上卸下来 ——
   //    这几条只证明"按钮还在、还接着那个函数"，证明不了跑起来对

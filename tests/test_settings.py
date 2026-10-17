@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from app import config, main, settings
+from app import config, main, settings, thumbs
 
 
 @pytest.fixture(autouse=True)
@@ -81,6 +81,62 @@ def test_rejects_non_positive():
         settings.set_well_diameter_um(0)
     with pytest.raises(ValueError):
         settings.set_well_diameter_um(-100)
+
+
+# ---------------- 画面风格（字号 / 线宽 / 画布） ----------------
+
+def test_style_defaults_match_the_measure_page():
+    """★ 默认值必须和 web/measure.html 的 FONT_BASE / LINE_DEF 一样。
+
+    不一样的话，用户一次滑块都没动过，图库缩略图和批量导出也会和测量页
+    对不上 —— 2026-10-17 用户报的就是这个（服务端还停在 13/3）。
+    """
+    st = settings.draw_style()
+    assert st["font_px"] == pytest.approx(16)
+    assert st["line_w"] == pytest.approx(2)
+    assert st["stage_w"] is None and st["stage_h"] is None
+
+
+def test_style_round_trip():
+    st = settings.set_draw_style(font_px=24, line_w=3.5,
+                                 stage_w=1200, stage_h=800)
+    assert st["font_px"] == pytest.approx(24)
+    assert st["line_w"] == pytest.approx(3.5)
+    assert st["stage_w"] == pytest.approx(1200)
+    assert st["stage_h"] == pytest.approx(800)
+    assert settings.draw_style() == pytest.approx(st)
+
+
+def test_partial_update_keeps_diameter_and_other_style_keys():
+    """图库只知道字号/线宽，不知道画布尺寸 —— 部分更新不能把别的键抹掉。
+    孔直径和画面风格在同一个文件里，更要互相不打架。"""
+    settings.set_well_diameter_um(2500.0)
+    settings.set_draw_style(font_px=20, line_w=3, stage_w=1000, stage_h=700)
+    settings.set_draw_style(font_px=22)             # 只改字号
+    assert settings.well_diameter_um() == pytest.approx(2500.0)
+    st = settings.draw_style()
+    assert st["font_px"] == pytest.approx(22)
+    assert st["line_w"] == pytest.approx(3)
+    assert st["stage_w"] == pytest.approx(1000)
+
+
+@pytest.mark.parametrize("kw", [
+    {"font_px": 9}, {"font_px": 35},
+    {"line_w": 0.5}, {"line_w": 9},
+    {"stage_w": 0}, {"stage_h": 999999},
+])
+def test_style_rejects_absurd_values(kw):
+    with pytest.raises(ValueError):
+        settings.set_draw_style(**kw)
+
+
+def test_broken_style_values_fall_back():
+    """文件里是垃圾值时：读得出来的夹到范围里，读不出来的回默认。"""
+    _write_settings('{"font_px": "abc", "line_w": 999, "stage_w": "x"}')
+    st = settings.draw_style()
+    assert st["font_px"] == pytest.approx(16)      # 不是数字 → 默认
+    assert st["line_w"] == pytest.approx(8)        # 超范围 → 夹到上限
+    assert st["stage_w"] is None                   # 不是数字 → 当没有
 
 
 # ---------------- /api/settings ----------------
@@ -180,3 +236,57 @@ def test_recalibrating_updates_existing_measurements(client):
     line = r.json()["lines"][0]
     assert line["measured_um"] == pytest.approx(500.0)    # 20px × 25，重算过
     assert line["note"] == "晶体A"                          # 备注没被动
+
+
+# ---------------- /api/settings/style ----------------
+
+def test_put_style_persists(client):
+    r = client.put("/api/settings/style", json={"font_px": 24, "line_w": 3})
+    assert r.status_code == 200, r.text
+    assert r.json()["font_px"] == pytest.approx(24)
+    assert r.json()["line_w"] == pytest.approx(3)
+    assert settings.draw_style()["font_px"] == pytest.approx(24)     # 真落盘了
+    assert client.get("/api/settings/style").json()["line_w"] \
+        == pytest.approx(3)
+
+
+@pytest.mark.parametrize("body", [
+    {"font_px": 9}, {"font_px": 35}, {"line_w": 0.5}, {"line_w": 9},
+])
+def test_put_style_rejects_absurd_values(client, body):
+    r = client.put("/api/settings/style", json=body)
+    assert r.status_code == 400
+    assert "只能" in r.json()["detail"]
+
+
+def test_style_change_drops_only_calibrated_thumbnails(client):
+    """★ 字号/线宽变了，**标定过**的缩略图必须重画（上面画着线和字）。
+
+    没标定的缩略图是光图，不该跟着被删 —— 删了下次打开要重新解码原图，
+    几十张照片会让图库卡半天。
+    """
+    iid = _upload_one(client)
+    client.put(f"/api/image/{iid}/circle",
+               json={"cx": 40, "cy": 30, "a": 50, "b": 50, "th": 0})
+    assert client.get(f"/api/images/{iid}/thumb").status_code == 200
+    assert thumbs.path_for(iid).exists()
+
+    plain = _upload_one(client)                       # 没标定
+    assert client.get(f"/api/images/{plain}/thumb").status_code == 200
+    assert thumbs.path_for(plain).exists()
+
+    client.put("/api/settings/style", json={"font_px": 20})
+    assert not thumbs.path_for(iid).exists(), "标定过的缩略图没作废，样式还是旧的"
+    assert thumbs.path_for(plain).exists(), "没标定的光图不该被删"
+
+
+def test_stage_size_change_does_not_drop_thumbnails(client):
+    """拉伸窗口不该让整面格子墙重画 —— 缩略图就 320px，那点比例差看不出。"""
+    iid = _upload_one(client)
+    client.put(f"/api/image/{iid}/circle",
+               json={"cx": 40, "cy": 30, "a": 50, "b": 50, "th": 0})
+    client.get(f"/api/images/{iid}/thumb")
+    assert thumbs.path_for(iid).exists()
+
+    client.put("/api/settings/style", json={"stage_w": 1200, "stage_h": 800})
+    assert thumbs.path_for(iid).exists()

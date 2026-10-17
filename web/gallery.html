@@ -2304,8 +2304,27 @@ readUrl();
 if (new URLSearchParams(location.search).get('pending') === '1') {
   localStorage.setItem('jltx.pendingOpen', '1');
 }
-reload();
-loadPending();
+
+// 测量页把「图上字号 / 线条粗细」存在 localStorage（jltx.font / jltx.line）。
+// 图库的缩略图和「导出图片」是服务端画的 —— 先把这两个值推过去再加载格子墙，
+// 否则第一次打开图库看到的还是默认粗细（用户 2026-10-17 报的"没同步"）。
+// 推不过去只是粗细不同步，不该挡住图库，所以失败也照样往下走。
+async function pushStyle() {
+  const body = {};
+  const f = localStorage.getItem('jltx.font');
+  const l = localStorage.getItem('jltx.line');
+  if (f != null) body.font_px = Number(f);
+  if (l != null) body.line_w = Number(l);
+  if (!Object.keys(body).length) return;
+  try {
+    await fetch('/api/settings/style', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch {}
+}
+
+pushStyle().finally(() => { reload(); loadPending(); });
 </script>
 </body>
 </html>

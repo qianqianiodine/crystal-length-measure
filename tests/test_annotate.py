@@ -242,15 +242,71 @@ def test_style_matches_the_page_at_canvas_scale():
     试用页画布短边约 620px，页面上那些写死的像素数就是按这个尺度定的。
     在 620px 的输出图上，导出的绘制尺寸必须正好等于页面上的原始数字。
     以前导出自己另算一套（线宽按图高的 1/220），结果标尺成了个哑铃。
+
+    ⚠️ 2026-10-17 跟着测量页改过：页面默认线宽是 2（不是 3）、字号 16（不是 13）、
+    端点跟着线宽走（不是写死的 4.5/2.5）。服务端一直没跟，用户就看到
+    「图库的线条字号和测量页面不同步」。
     """
     st = annotate.style_for(620, 620)
-    assert st["line_w"] == 3        # 页面 halo(path, color, 3)
-    assert st["line_halo"] == 6     # 页面 halo() 的 3 + 3.5
-    assert st["text_size"] == 13    # 页面 '600 13px'
-    assert st["lift"] == 20         # 页面 labelScreen() 里减掉的那 20
-    assert st["bar_tick"] == 7      # 页面 BAR_TICK
-    assert st["bar_w"] in (2, 3)    # 页面 2.5
-    assert st["bar_halo"] == 6      # 页面 2.5 + 3.5
+    assert st["line_w"] == 2          # 页面 LINE_DEF
+    assert st["line_halo"] == 6       # 页面 halo() 的 2 + 3.5 = 5.5 → 6
+    assert st["text_size"] == 16      # 页面 FONT_BASE
+    assert st["lift"] == 20           # 页面 LABEL_LIFT（默认字号时）
+    assert st["endpoint_r"] == 2      # 页面 dot 半径 1.5×2，看得见的本色 1.1×2
+    assert st["endpoint_ring"] == 4   # 深色外圈 1.9×2 = 3.8 → 4
+    assert st["bar_tick"] == 7        # 页面 BAR_TICK
+    assert st["bar_w"] in (2, 3)      # 页面 2.5
+    assert st["bar_halo"] == 6        # 页面 2.5 + 3.5
+
+
+def test_style_follows_the_two_sliders():
+    """★ 用户在测量页调了字号/线宽，导出和缩略图必须跟着变。
+
+    服务端这两个数来自 data/settings.json（测量页推过来的）——
+    style_for 收不到它们的话，图库里永远是默认粗细（用户 2026-10-17 报过）。
+    """
+    st = annotate.style_for(620, 620, font_px=24, line_w=4)
+    assert st["text_size"] == 24
+    assert st["line_w"] == 4
+    assert st["line_halo"] == 8       # 4 + 3.5（线够粗时打底固定 3.5）
+    assert st["lift"] == 30           # 20 × (24/16)，字号调大标签跟着抬高
+    # 线细到 1 时打底要收窄，否则深色边比色芯还粗，画出来是一条黑线
+    assert annotate.style_for(620, 620, line_w=1)["line_halo"] == 3
+
+
+def test_page_scale_uses_the_whole_photo_and_the_stage():
+    """比例按**整张照片**和测量页画布算 —— 不是按裁剪后的输出。"""
+    # 4000×3000 的照片铺进 1200×800 的画布（四周各留 28px）
+    want = 1.0 / min((1200 - 28) / 4000, (800 - 28) / 3000)
+    assert annotate.page_scale(3000, 4000, 1, 1200, 800) == pytest.approx(want)
+    assert annotate.page_scale(3000, 4000, 2, 1200, 800) == pytest.approx(want * 2)
+    # 不知道画布多大 → 退回「照片铺进短边 620 的画布」
+    assert annotate.page_scale(3000, 4000, 1) == pytest.approx(3000 / 620)
+
+
+def test_crop_does_not_change_the_line_thickness():
+    """★ 裁剪只决定"导哪一块"，不该改变字号/线宽相对照片的大小。
+
+    老代码用**裁剪后**的输出尺寸算比例（min(高,宽)/620），框选得越小，
+    字和线就跟着越小 —— 整张导和裁一小区导，粗细能差好几倍。
+    字号是"照片的一部分"：裁掉四周，它不该缩水。
+    """
+    img = np.full((1000, 1000, 3), 128, np.uint8)
+    lines = [{"seq": 1, "x1": 100, "y1": 500, "x2": 900, "y2": 500,
+              "measured_um": 1000.0, "color": "#FF2D55"}]
+
+    def thickness(out, col):
+        ys = np.where(np.any(out[:, col] != 128, axis=1))[0]
+        return int(ys.max() - ys.min() + 1) if len(ys) else 0
+
+    full = annotate.draw_annotations(img, lines, 10.0, scale_bar=False,
+                                     show_labels=False, show_seq=False)
+    crop = annotate.draw_annotations(img, lines, 10.0,
+                                     crop=(100, 400, 900, 600),
+                                     scale_bar=False,
+                                     show_labels=False, show_seq=False)
+    # 列取原图 x=500（避开两端圆点）：裁剪后 x0=100 → 第 400 列
+    assert thickness(full, 500) == thickness(crop, 400)
 
 
 def test_style_scales_with_the_output():

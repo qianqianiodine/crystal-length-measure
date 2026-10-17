@@ -31,49 +31,86 @@ BAR_TARGET_RATIO = (BAR_MIN_RATIO + BAR_MAX_RATIO) / 2.0
 # 直接把内存吃满 —— 宁可报个清楚的中文错，也别让工具卡死。
 MAX_OUTPUT_PIXELS = 40_000_000
 
-# ============ 导出图的绘制尺寸，全部从页面推出来 ============
+# ============ 输出图的绘制尺寸，全部从页面推出来 ============
 # 用户的要求是「导出的画面跟我框选的页面一模一样」。做法不是各调各的，
-# 而是：试用页的画布短边大约就这么宽，页面上那些写死的像素数
-# （线宽 3、端点半径 4.5、字号 13、标尺白线 2.5、刻度 7、标签抬升 20）
-# 就是按这个尺度定的。导出图按 min(高,宽)/620 这个系数等比放大，
-# 两边就自然一致 —— 而不是像原来那样各算各的（导出的标尺就成了哑铃）。
+# 而是把页面上那几个数（字号、线宽、端点、标尺）原样拿来，按同一个比例
+# 放大/缩小。比例是「页面 CSS 像素 → 输出像素」：
+#
+#   页面把整张照片按 fitFullScale() 塞进画布，所以 16px 的字相对照片有多大，
+#   取决于**画布尺寸**；服务端拿到测量页报上来的画布宽高（settings.draw_style
+#   里的 stage_w/stage_h）就能算出同一个比例，导出的字号、线宽、圆点
+#   就和测量页直接导出**同比例**。
+#
+# ⚠️ 比例必须用**整张照片**的尺寸算，不能用裁剪后的输出尺寸 ——
+#   字号是"照片的一部分"：裁掉画面四周不该让字变小。
+#   老代码用输出图短边算，裁得越狠字越小；2026-10-17 修掉。
+# 用户还没打开过测量页（不知道画布多大）时，退回老的估算：画布短边 ≈ 620px。
 CANVAS_MIN_SIDE = 620.0
+PAGE_FIT_MARGIN = 28.0     # 页面 fitScaleFor() 四周留的空
 
-# 页面上的这些数，单位是「页面的屏幕像素」。改这里必须同时改 web/measure.html
-PAGE_LINE_W = 3.0          # halo(path, color, 3)
-PAGE_HALO_EXTRA = 3.5      # halo() 里深色描边比本色宽多少
-PAGE_ENDPOINT_R = 4.5      # dot(p, 4.5, ...)
-PAGE_ENDPOINT_RING = 2.5
-PAGE_FONT = 13.0           # '600 13px' --num
-PAGE_LABEL_LIFT = 20.0     # labelScreen() 里减掉的那 20px
+# 页面上的这些数，单位是「页面的 CSS 像素」。改这里必须同时改 web/measure.html
+# （2026-10-17：测量页早就把默认线宽从 3 改成 2、字号从 13 改成 16 了，
+#  这里一直没跟 —— 图库缩略图和批量导出就比测量页粗一档、字小一截）。
+PAGE_LINE_W = 2.0          # 页面 LINE_DEF（滑块可调）
+PAGE_LINE_PAD_MAX = 3.5    # halo() 的深色打底：min(3.5, 线宽 × 1.75)
+PAGE_FONT = 16.0           # 页面 FONT_BASE（滑块可调）
+PAGE_LABEL_LIFT = 20.0     # labelScreen() 里减掉的那 20px（还要乘字号比例）
 PAGE_BAR_W = 2.5           # drawScaleBar() 的白色线宽
 PAGE_BAR_TICK = 7.0        # 两端小刻度
 PAGE_BAR_LABEL_GAP = 11.0  # 标尺文字离横线多远（页面 strokeText(t, x2, y - 11)）
 
 
-def style_for(h: int, w: int) -> dict:
+def page_scale(full_h: int, full_w: int, supersample: int = 1,
+               stage_w: float | None = None,
+               stage_h: float | None = None) -> float:
+    """一个页面 CSS 像素 = 多少个输出像素。
+
+    full_h/full_w 是**裁剪前**的整张照片尺寸（页面是按整张照片缩放的）。
+    stage_w/stage_h 是测量页画布尺寸；不知道就按短边 620px 估算。
+    """
+    if stage_w and stage_h and full_w > 0 and full_h > 0:
+        # 页面 fitScaleFor()：一个照片像素有多少个页面像素
+        base = min((stage_w - PAGE_FIT_MARGIN) / full_w,
+                   (stage_h - PAGE_FIT_MARGIN) / full_h)
+    else:
+        # 不知道画布多大 → 假设整张照片铺进短边 620px 的画布
+        base = CANVAS_MIN_SIDE / min(full_w, full_h)
+    if not (base > 0):
+        base = 1.0
+    return supersample / base
+
+
+def style_for(h: int, w: int, *, scale: float | None = None,
+              font_px: float = PAGE_FONT,
+              line_w: float = PAGE_LINE_W) -> dict:
     """算出这张输出图上该用多粗的线、多大的字。
 
-    返回的一切都按「页面画布短边 = 620px」的尺度等比放大，
-    所以在 620px 的图上得到的就是页面上的原始数字。
+    `scale` 是「页面像素 → 输出像素」的倍率（见 page_scale）。
+    不传就按老的估算：输出图短边 / 620。
+    `font_px` / `line_w` 是用户在测量页滑块上选的值，默认就是页面默认值。
     """
-    d = min(h, w) / CANVAS_MIN_SIDE
-    line_w = max(2, int(round(PAGE_LINE_W * d)))
+    d = min(h, w) / CANVAS_MIN_SIDE if scale is None else float(scale)
+    font_px = float(font_px)
+    line_w = float(line_w)
+    # 页面 halo()：深色打底比本色宽 min(3.5, 线宽×1.75)（线细时不能比色芯还粗）
+    pad = min(PAGE_LINE_PAD_MAX, line_w * 1.75)
+    # 下限 2 是给很小的图留的：1px 的线在 cv2 的抗锯齿下会被深色打底吃掉，
+    # 看上去是一条黑线（老代码就是 2，真实照片上 d≈5，碰不到这个下限）。
+    lw = max(2, int(round(line_w * d)))
     bar_w = max(2, int(round(PAGE_BAR_W * d)))
     return {
         "d": d,
-        "line_w": line_w,
-        # 描边宽度用的是页面的 halo() 规则：本色 + 3.5
-        "line_halo": max(line_w + 1, int(round((PAGE_LINE_W + PAGE_HALO_EXTRA) * d))),
-        # 页面 dot(p, 4.5, 线的颜色, 2.5)：填一个半径 4.5 的**本色**圆，
-        # 再用 2.5 宽的深色描一圈。canvas 的 stroke 是沿路径居中的，
-        # 所以实际看到的是「本色半径 3.25，深色外圈到 5.75」。
-        "endpoint_r": max(3, int(round((PAGE_ENDPOINT_R - PAGE_ENDPOINT_RING / 2) * d))),
-        "endpoint_ring": max(4, int(round((PAGE_ENDPOINT_R + PAGE_ENDPOINT_RING / 2) * d))),
-        "text_size": max(11, int(round(PAGE_FONT * d))),
-        "lift": int(round(PAGE_LABEL_LIFT * d)),
+        "line_w": lw,
+        "line_halo": max(lw + 1, int(round((line_w + pad) * d))),
+        # 页面 dot(p, 线宽×1.5, 本色, 线宽×0.8)：stroke 沿圆周居中，
+        # 所以看得见的本色半径是 1.1×线宽，深色外圈到 1.9×线宽。
+        "endpoint_r": max(1, int(round(line_w * 1.1 * d))),
+        "endpoint_ring": max(2, int(round(line_w * 1.9 * d))),
+        "text_size": max(11, int(round(font_px * d))),
+        # 页面 labelScreen()：抬升 = 20 × (字号/16)，字号调大标签跟着抬高
+        "lift": int(round(PAGE_LABEL_LIFT * (font_px / PAGE_FONT) * d)),
         "bar_w": bar_w,
-        "bar_halo": max(bar_w + 1, int(round((PAGE_BAR_W + PAGE_HALO_EXTRA) * d))),
+        "bar_halo": max(bar_w + 1, int(round((PAGE_BAR_W + PAGE_LINE_PAD_MAX) * d))),
         "bar_tick": max(4, int(round(PAGE_BAR_TICK * d))),
     }
 
@@ -323,7 +360,11 @@ def draw_annotations(img_rgb: np.ndarray, lines: list[dict], um_per_px: float,
                      crop=None, scale_bar: bool = True, scale_bar_pos: str = "br",
                      show_labels: bool = True, show_seq: bool = True,
                      show_notes: bool = False,
-                     supersample: int = 1, scale_bar_xy=None) -> np.ndarray:
+                     supersample: int = 1, scale_bar_xy=None,
+                     font_px: float | None = None,
+                     line_w: float | None = None,
+                     stage_w: float | None = None,
+                     stage_h: float | None = None) -> np.ndarray:
     """绘制标注并（可选）裁剪。
 
     ⚠️ 不修改传入的 lines —— 这是纯显示层操作，不得影响数据。
@@ -338,6 +379,9 @@ def draw_annotations(img_rgb: np.ndarray, lines: list[dict], um_per_px: float,
         scale_bar_xy: 用户把标尺拖到的位置（**原图坐标**，指标尺的右端点）；
                       None = 用 scale_bar_pos 那个角
         supersample: 输出放大倍数（1/2/4），提升出版质量
+        font_px / line_w: 测量页滑块上选的字号和线宽（页面像素）；
+                          不传 = 页面默认的 16 / 2
+        stage_w / stage_h: 测量页画布尺寸（页面像素）。不传 = 按短边 620 估算
     Returns:
         绘制并裁剪后的 RGB 图
     """
@@ -361,7 +405,13 @@ def draw_annotations(img_rgb: np.ndarray, lines: list[dict], um_per_px: float,
 
     s = supersample
     h, w = out.shape[:2]
-    st = style_for(h, w)     # 所有尺寸都从页面尺度推出来，见 style_for 的说明
+    # ⚠️ 缩放比例用**裁剪前**的整张照片算（字号是照片的一部分，
+    # 裁剪不该改变它的大小）—— 见 page_scale 的说明。
+    fh, fw = img_rgb.shape[:2]
+    st = style_for(h, w,
+                   scale=page_scale(fh, fw, s, stage_w, stage_h),
+                   font_px=PAGE_FONT if font_px is None else font_px,
+                   line_w=PAGE_LINE_W if line_w is None else line_w)
     texts = []               # 文字最后统一画，压在所有图形上层
 
     for ln in lines:

@@ -209,7 +209,7 @@ body.dragging #drop { display: flex; }
 
 <header>
   <span class="brand">晶体长度测量<span>坐滴板单孔照片</span></span>
-  <button id="btnGallery" title="看所有照片，点一张进来量">图库</button>
+  <button id="btnGallery" title="去图库挑照片（从哪个文件夹来的，回去还是那个文件夹）">图库</button>
   <select id="picker" aria-label="选择照片"><option>正在读取照片列表…</option></select>
   <button id="btnOpen" class="primary">打开</button>
   <span id="scope" hidden>
@@ -486,6 +486,10 @@ function resize() {
   cv.style.width = CW + 'px';
   cv.style.height = CH + 'px';
   render();
+  // 画布大小也告诉服务端：字号/线宽是"照片的一部分"，窗口越大，
+  // 同样的 16px 字相对照片就越小 —— 图库导出要按同一个比例画。
+  // 最小化时画布可能是 1×1，那种尺寸别报（服务端会拒）。
+  if (SW >= 100 && SH >= 100) pushStyle();
 }
 window.addEventListener('resize', resize);
 
@@ -1106,6 +1110,7 @@ $('exFont').addEventListener('input', () => {
   applyFontPx($('exFont').value);
   try { localStorage.setItem(FONT_KEY, String(FONT_PX)); } catch {}
   render();
+  pushStyle();
 });
 
 // 测量线粗细滑块。和字号一样**单独存**、不进 session —— 粗细是"我这台机器
@@ -1123,7 +1128,24 @@ $('exLine').addEventListener('input', () => {
   applyLineW($('exLine').value);
   try { localStorage.setItem(LINE_KEY, String(LINE_W)); } catch {}
   render();
+  pushStyle();
 });
+
+// 把字号 / 线宽（以及画布尺寸）告诉服务端 —— 图库的缩略图和「导出图片」
+// 都是服务端画的，不告诉它，那边就一直是默认的 16 / 2。
+// 拖动滑块时 input 事件很密，攒 300ms 再发；失败也不提示：
+// 这只影响"另外两个地方照着画"，不该打断测量。
+let stylePushTimer = 0;
+function pushStyle() {
+  clearTimeout(stylePushTimer);
+  stylePushTimer = setTimeout(() => {
+    fetch('/api/settings/style', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ font_px: FONT_PX, line_w: LINE_W,
+                             stage_w: SW, stage_h: SH }),
+    }).catch(() => {});
+  }, 300);
+}
 
 $('exSelect').addEventListener('change', e => {
   cropMode = e.target.checked;
@@ -2269,7 +2291,12 @@ async function openPhoto(id, restore) {
 }
 
 $('btnOpen').addEventListener('click', () => openPhoto(+$('picker').value));
-$('btnGallery').addEventListener('click', () => { location.href = '/gallery'; });
+$('btnGallery').addEventListener('click', () => {
+  // 带上当前范围：从图库的某个文件夹里点开一张照片，量完点「图库」要回到
+  // 那个文件夹，而不是「全部照片」。S.scope === '0' 是「未分类」，也要带；
+  // 只有空串才是「全部」。
+  location.href = '/gallery' + (S.scope !== '' ? `?folder=${S.scope}` : '');
+});
 
 // ---------- 导入 ----------
 async function uploadFiles(files) {
