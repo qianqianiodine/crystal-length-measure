@@ -446,11 +446,11 @@ footer .pos { font: 12.5px var(--num); color: var(--mute); }
 
 <div id="selBar" hidden>
   <span class="txt" id="selCount">已选 0 张</span>
-  <button id="selPage" type="button">全选本页</button>
-  <button id="selAll" type="button" hidden>选中全部 0 张</button>
+  <button id="selAll" type="button" hidden>全选全部 0 张</button>
   <span class="grow"></span>
   <button id="selTag" type="button" disabled>打标签</button>
   <button id="selExport" type="button" disabled>导出图片</button>
+  <button id="selLabel" type="button" disabled>导出标签</button>
   <button id="selArchive" type="button" disabled>归档…</button>
   <button id="selDelete" type="button" disabled>删除</button>
   <button id="selExit" type="button">退出</button>
@@ -586,13 +586,16 @@ function paintSel() {
   $('selDelete').disabled = SEL.ids.size === 0;
   $('selTag').disabled = SEL.ids.size === 0;
   $('selExport').disabled = SEL.ids.size === 0;
+  $('selLabel').disabled = SEL.ids.size === 0;
 
-  // 「选中全部 N 张」只在两件事同时成立时出现：
-  // ① 当前页全被勾上 ② 确实还有没勾到的（Gmail 那种做法）
-  const pageIds = [...$('grid').querySelectorAll('.card')].map(c => Number(c.dataset.id));
-  const allPage = pageIds.length > 0 && pageIds.every(id => SEL.ids.has(id));
-  $('selAll').hidden = !(allPage && S.total > SEL.ids.size);
-  $('selAll').textContent = `选中全部 ${S.total} 张`;
+  // 用户 2026-10-23 要求「能全选」，并且全选之后**必须能取消**：
+  // 没全选时按钮写「全选全部 N 张」，全选之后同一个按钮变成「取消全选（N 张）」，
+  // 再点一下就清空。不另加一个按钮 —— 操作栏已经够挤了，而且用户要的是"有路可退"。
+  const allSel = S.total > 0 && SEL.ids.size >= S.total;
+  $('selAll').hidden = false;
+  $('selAll').disabled = S.total === 0;
+  $('selAll').textContent = allSel
+    ? `取消全选（${S.total} 张）` : `全选全部 ${S.total} 张`;
 }
 
 // 只改这一张卡片的描边，不重画整个格子墙 —— 点一下重画 24 张卡会闪
@@ -1778,14 +1781,16 @@ $('overlay').addEventListener('click', e => {
 $('gSelect').addEventListener('click', () => setSelMode(!SEL.on));
 $('selExit').addEventListener('click', () => setSelMode(false));
 
-$('selPage').addEventListener('click', () => {
-  for (const c of $('grid').querySelectorAll('.card')) SEL.ids.add(Number(c.dataset.id));
-  saveSel();
-  renderGrid(LAST);
-  paintSel();
-});
-
 $('selAll').addEventListener('click', async () => {
+  // 全选之后同一个按钮是「取消全选」：清空已勾的，不碰照片本身
+  if (S.total > 0 && SEL.ids.size >= S.total) {
+    SEL.ids.clear();
+    saveSel();
+    renderGrid(LAST);
+    paintSel();
+    toast('已取消全选');
+    return;
+  }
   // 客户端只把当前筛选条件发过去，服务端按**同一套 _filter** 把 id 全捞回来
   const u = new URLSearchParams({ status: S.status, q: S.q });
   if (S.folder !== '') u.set('folder', S.folder);
@@ -2278,8 +2283,74 @@ async function exportImages() {
   await reload();
 }
 
+// ---------- 导出标签（只导照片名字） ----------
+
+async function exportLabels() {
+  const n = SEL.ids.size;
+  if (!n) return;
+
+  const wrap = document.createElement('div');
+
+  const fmts = document.createElement('div');
+  fmts.className = 'pick';
+  const mk = (value, label, note, checked) => {
+    const lab = document.createElement('label');
+    lab.className = 'pickRow';
+    const rb = document.createElement('input');
+    rb.type = 'radio';
+    rb.name = 'labelFmt';
+    rb.value = value;
+    rb.checked = checked;
+    const tx = document.createElement('span');
+    tx.className = 'lab';
+    tx.textContent = label;
+    const em = document.createElement('em');
+    em.textContent = note;
+    tx.append(em);
+    lab.append(rb, tx);
+    return { lab, rb };
+  };
+  const rExcel = mk('xlsx', 'Excel 表格', '用 Excel / WPS 打开，一行一个标签', true);
+  const rTxt = mk('txt', '纯文本', '一行一个标签，方便复制', false);
+  fmts.append(rExcel.lab, rTxt.lab);
+
+  const opt = document.createElement('label');
+  opt.className = 'pickRow';
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  const tx = document.createElement('span');
+  tx.className = 'lab';
+  tx.textContent = '带上文件夹名字';
+  const em = document.createElement('em');
+  em.textContent = 'Excel 里多一列；txt 里文件夹名单独一行、只出现一次';
+  tx.append(em);
+  opt.append(cb, tx);
+
+  wrap.append(fmts, opt);
+
+  const v = await ask(
+    `导出这 ${n} 张的标签`,
+    '只导出照片名字（就是卡片上那一行，例如 50-JBScreen-H-9-1），不导出图片。',
+    wrap,
+    [{ label: '取消', value: null },
+     { label: '导出', pick: () => ({
+        format: rExcel.rb.checked ? 'xlsx' : 'txt',
+        with_folders: cb.checked,
+     }) }]);
+  if (!v) return;
+
+  const r = await send('/api/images/export-labels', 'POST',
+                       { image_ids: selIds(), ...v });
+  if (!r) return;
+  let msg = `导出了 ${r.count} 个标签，在 ${r.file}`;
+  if (r.failed.length) msg += `；另有 ${r.failed.length} 张不在了，跳过了`;
+  msg += r.opened ? '，文件夹已经帮你打开了' : '，自己去这个文件夹拿';
+  toast(msg);
+}
+
 $('selTag').addEventListener('click', batchTag);
 $('selExport').addEventListener('click', exportImages);
+$('selLabel').addEventListener('click', exportLabels);
 $('selArchive').addEventListener('click', batchArchive);
 $('selDelete').addEventListener('click', batchDelete);
 

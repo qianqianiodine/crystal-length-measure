@@ -61,7 +61,9 @@ SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}
 # 24 → 25（2026-10-23）：模型推理补两遍"围着预测裁切"（完整孔用户反馈不准）。
 #   接口没变，但老进程还是旧的推理逻辑，开图拿到的起点圆偏得厉害 —— +1 让
 #   launch.py 把"先关掉那个黑窗口再开"喊出来。
-API_VERSION = 25
+# 25 → 26（2026-10-23）：新增 POST /api/images/export-labels（导出照片名字清单）。
+#   老进程没有这个接口，新页面点「导出标签」会静默 404、一句提示都没有。
+API_VERSION = 26
 
 
 def ensure_dirs() -> None:

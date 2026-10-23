@@ -22,7 +22,8 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from app import bgdetect, config, db, exporter, imageio, measure, storage, thumbs
+from app import (bgdetect, config, db, exporter, imageio, label_export, measure,
+                 storage, thumbs)
 from app.db import get_db
 
 router = APIRouter(prefix="/api", tags=["images"])
@@ -687,5 +688,76 @@ def export_images(body: ExportIn, conn=Depends(get_db)) -> dict:
         "count": len(written),             # **导出成功的照片**张数（一张在 2 个文件夹里算 1 张）
         "renamed": sum(1 for p in plan if p["renamed"] and p["image_id"] in written),
         "failed": sorted(failed),          # 库里没有的 + 中途读不出来的，合并报给用户
+        "opened": opened,
+    }
+
+
+# ---------------- 导出标签（照片名字清单） ----------------
+
+class ExportLabelsIn(BaseModel):
+    image_ids: list[int] = []
+    format: str = "xlsx"                   # xlsx / txt
+    with_folders: bool = False
+
+
+@router.post("/images/export-labels")
+def export_labels(body: ExportLabelsIn, conn=Depends(get_db)) -> dict:
+    """把勾中的照片**名字**导成一张清单（xlsx 或 txt），不导出图片。
+
+    用户的照片名字就是初筛来源的孔位（如 `50-JBScreen-H-9-1`）—— 他要的是
+    拿着这张清单回头翻每张照片的条件，所以这里只列名字，不碰图像。
+    和 export-images 一样只往 `导出/` 底下写，**不改数据库、不动原图**。
+    """
+    if not body.image_ids:
+        raise HTTPException(400, "没有选中任何照片")
+    if body.format not in ("xlsx", "txt"):
+        raise HTTPException(400, "格式只能是 xlsx 或 txt")
+
+    ids = _resolve_ids(conn, body.image_ids)          # 去重 + 跳过不存在的
+    failed = sorted(set(body.image_ids) - set(ids))
+    if not ids:
+        raise HTTPException(400, "没有可导出的照片")
+
+    images = [db.get_image(conn, i) for i in ids]
+    folders = conn.execute("SELECT id, name, parent_id FROM folders").fetchall()
+    members = {i: db.image_folders(conn, i) for i in ids}
+    rows = label_export.build_rows(images, folders, members)
+
+    out_dir = config.EXPORT_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    ext = body.format
+    out = out_dir / f"标签_{stamp}.{ext}"
+    n = 2
+    while out.exists():                        # 同一秒点了两次也不能覆盖
+        out = out_dir / f"标签_{stamp} ({n}).{ext}"
+        n += 1
+
+    if ext == "xlsx":
+        out.write_bytes(label_export.to_xlsx(rows, body.with_folders))
+    else:
+        out.write_text(label_export.to_txt(rows, body.with_folders),
+                       encoding="utf-8-sig")
+
+    # 文件夹弹不出来不算失败 —— 文件已经在磁盘上了
+    opened = False
+    if sys.platform == "win32":
+        try:
+            os.startfile(out_dir)
+            opened = True
+        except OSError:
+            pass
+
+    def shown(p) -> str:
+        try:
+            return str(p.relative_to(config.PROJECT_ROOT)).replace("\\", "/")
+        except ValueError:                     # 测试里 EXPORT_DIR 在临时目录
+            return str(p).replace("\\", "/")
+
+    return {
+        "file": shown(out),
+        "dir": shown(out_dir),
+        "count": len(rows),
+        "failed": failed,
         "opened": opened,
     }

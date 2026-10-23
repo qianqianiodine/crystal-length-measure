@@ -303,7 +303,7 @@ function galleryPage() {
     + ' fillFolderSelect,'
     + ' setP: d => { P = d; }, loadPending, paintPending, setPending, pFlushNames,'
     + ' SEL, setSelMode, toggleSel, paintSel, renderGrid, makeCard,'
-    + ' readSel, load, batchArchive, batchDelete,'
+    + ' readSel, load, batchArchive, batchDelete, exportLabels,'
     + ' setTree: d => { TREE = d; }, setS: d => { Object.assign(S, d); },'
     + ' paintTree, toggleFold, subtreeIds, get foldShut() { return FOLD_SHUT; },'
     + ' get S() { return S; } };');
@@ -1034,7 +1034,7 @@ async function selModeChecks() {
   check('S5 在「全部照片」里点卡片，链接不带 folder',
         card4.querySelector('a').href === '/?id=15', card4.querySelector('a').href);
 
-  // ---- 全选本页 → 才长出「选中全部 N 张」----
+  // ---- 「全选」一进选择模式就看得见（2026-10-23 用户要求；「全选本页」已按用户要求去掉）----
   g.setSelMode(true);
   g.setS({ folder: '', total: 9 });      // 全库 9 张，本页只会放 3 张
   g.SEL.ids.clear();
@@ -1042,20 +1042,89 @@ async function selModeChecks() {
                 { id: 2, name: 'B', import_time: 0, line_count: 0, folders: [] },
                 { id: 3, name: 'C', import_time: 0, line_count: 0, folders: [] }]);
   g.paintSel();
-  check('S6 没全勾时没有「选中全部」', el('selAll').hidden === true);
-  el('selPage').dispatch('click');
-  check('S6 全选本页把当前页都勾上',
-        [1, 2, 3].every(id => g.SEL.ids.has(id)) && g.SEL.ids.size === 3,
-        `勾了 ${g.SEL.ids.size} 张`);
-  check('S6 这时才出现「选中全部 9 张」',
-        el('selAll').hidden === false && el('selAll').textContent === '选中全部 9 张',
-        el('selAll').textContent);
-  check('S6 两个动作放开了', el('selArchive').disabled === false);
+  check('S6 一进选择模式就能看见「全选全部 9 张」',
+        el('selAll').hidden === false && el('selAll').disabled === false
+        && el('selAll').textContent === '全选全部 9 张',
+        `${el('selAll').textContent} hidden=${el('selAll').hidden}`);
+  check('S6 「全选本页」已经从操作栏里去掉了',
+        !p.html.includes('全选本页'), '页面源码里还有「全选本页」');
 
-  // ---- 全勾上之后「选中全部」自己收起来 ----
+  // ---- 全勾上之后同一个按钮变成「取消全选」，再点一下清空 ----
+  for (const id of [1, 2, 3]) g.SEL.ids.add(id);
   g.setS({ total: 3 });
   g.paintSel();
-  check('S6 全库都勾上了，「选中全部」就收起来', el('selAll').hidden === true);
+  check('S6 有勾选时两个动作放开了', el('selArchive').disabled === false);
+  check('S6 全库都勾上了，按钮变成「取消全选（3 张）」',
+        el('selAll').hidden === false && el('selAll').disabled === false
+        && el('selAll').textContent === '取消全选（3 张）',
+        `${el('selAll').textContent} disabled=${el('selAll').disabled}`);
+  el('selAll').dispatch('click');
+  await sleep(10);
+  check('S6 再点一下取消全选，已勾的清空、按钮变回「全选全部 3 张」',
+        g.SEL.ids.size === 0 && el('selAll').textContent === '全选全部 3 张',
+        `${el('selAll').textContent} 已选 ${g.SEL.ids.size}`);
+
+  // ---- 直接点「全选全部」= 按当前筛选去服务端把 id 拉回来 ----
+  p.state.reply = (url, method) => (
+    String(url).startsWith('/api/images/ids')
+      ? { body: { ids: [1, 2, 3, 4, 5, 6, 7, 8, 9], total: 9 } } : null);
+  g.setS({ folder: '', total: 9 });
+  g.SEL.ids.clear();
+  g.renderGrid([]);
+  g.paintSel();
+  el('selAll').dispatch('click');
+  await sleep(10);
+  check('S6b 点「全选全部」把服务端返回的 id 全勾上',
+        g.SEL.ids.size === 9 && [1, 2, 3, 4, 5, 6, 7, 8, 9].every(id => g.SEL.ids.has(id)),
+        `勾了 ${g.SEL.ids.size} 张`);
+  check('S6b 全勾上后按钮变成「取消全选（9 张）」',
+        el('selAll').disabled === false && el('selAll').textContent === '取消全选（9 张）',
+        `${el('selAll').textContent} disabled=${el('selAll').disabled}`);
+  p.state.reply = null;
+
+  // ---- 导出标签：按钮状态 + 默认导出 Excel ----
+  g.setSelMode(true);
+  g.setS({ total: 9 });
+  g.SEL.ids.clear();
+  g.paintSel();
+  check('S11 一张没勾时「导出标签」禁用', el('selLabel').disabled === true);
+  g.SEL.ids.add(12);
+  g.paintSel();
+  check('S11 勾了就能点「导出标签」', el('selLabel').disabled === false);
+
+  const realSend = p.context.send;
+  const labelPosts = [];
+  p.context.send = async (url, method, body) => {
+    labelPosts.push({ url, method, body });
+    return { file: '导出/标签_x.xlsx', dir: '导出', count: 1, failed: [], opened: false };
+  };
+  // 模拟真弹窗里点「导出」：ask 的最后一个按钮的 pick() 给出 {format, with_folders}
+  p.context.ask = async (title, hint, content, buttons) => {
+    const b = buttons[buttons.length - 1];
+    return b.pick ? b.pick() : b.value;
+  };
+  await g.exportLabels();
+  check('S11 默认导出 Excel、不带文件夹',
+        labelPosts.length === 1 && labelPosts[0].url === '/api/images/export-labels'
+        && labelPosts[0].method === 'POST' && labelPosts[0].body.format === 'xlsx'
+        && labelPosts[0].body.with_folders === false,
+        JSON.stringify(labelPosts));
+
+  // ---- 选纯文本 + 勾上文件夹，发的请求要跟着变 ----
+  p.context.ask = async (title, hint, content, buttons) => {
+    for (const r of content.querySelectorAll('input')) {
+      if (r.type === 'radio') r.checked = r.value === 'txt';
+      if (r.type === 'checkbox') r.checked = true;
+    }
+    return buttons[buttons.length - 1].pick();
+  };
+  await g.exportLabels();
+  check('S11 选 txt + 带文件夹，请求里两个值都对',
+        labelPosts.length === 2 && labelPosts[1].body.format === 'txt'
+        && labelPosts[1].body.with_folders === true,
+        JSON.stringify(labelPosts[1]));
+  p.context.ask = async () => true;      // 还原，免得影响后面的检查
+  p.context.send = realSend;             // send 也是真页面的，S12b/S13 还要用
 
   // ---- 刷新后勾还在（localStorage）----
   // ⚠️ 页面哪天不写 jltx.sel 了，getItem 给的是 null —— 直接 JSON.parse(null)
