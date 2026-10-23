@@ -125,3 +125,96 @@ def test_new_db_has_crop_column(tmp_path):
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(images)")}
     assert "crop" in cols
     conn.close()
+
+
+# ---------------- client_uid（手机离线队列的幂等键） ----------------
+
+def test_client_uid_round_trips(conn):
+    iid = db.create_image(conn, "A", "a.jpg", "p.jpg", "mobile", client_uid="u-1")
+    assert db.get_image(conn, iid)["client_uid"] == "u-1"
+    assert db.get_image_by_uid(conn, "u-1")["id"] == iid
+
+
+def test_get_image_by_uid_none_is_safe(conn):
+    """电脑端上传的图 client_uid 全是 NULL；空 uid 不能被当成"第一个 NULL"。"""
+    db.create_image(conn, "A", "a.jpg", "p.jpg", "upload")
+    assert db.get_image_by_uid(conn, None) is None
+    assert db.get_image_by_uid(conn, "") is None
+
+
+def test_client_uid_is_unique(conn):
+    import sqlite3
+
+    db.create_image(conn, "A", "a.jpg", "p.jpg", "mobile", client_uid="same")
+    with pytest.raises(sqlite3.IntegrityError):
+        db.create_image(conn, "B", "b.jpg", "p.jpg", "mobile", client_uid="same")
+
+
+def test_many_null_client_uids_are_allowed(conn):
+    """电脑端上传的图没有 uid，不能因为唯一索引互相打架。"""
+    db.create_image(conn, "A", "a.jpg", "p.jpg", "upload")
+    db.create_image(conn, "B", "b.jpg", "p.jpg", "upload")
+    assert db.count_images(conn) == 2
+
+
+def test_client_uid_column_migration(tmp_path):
+    """老库没有 client_uid 列：init_db 之后补上，唯一索引也建好。"""
+    import sqlite3
+
+    p = tmp_path / "old2.db"
+    old = sqlite3.connect(str(p))
+    old.execute("""CREATE TABLE images (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+        original_filename TEXT NOT NULL, path TEXT NOT NULL,
+        import_time INTEGER NOT NULL, import_source TEXT NOT NULL DEFAULT 'unknown',
+        tags TEXT NOT NULL DEFAULT '[]', favorite INTEGER NOT NULL DEFAULT 0,
+        transform TEXT, thumb_path TEXT, enhance TEXT, crop TEXT)""")
+    old.execute("INSERT INTO images (name, original_filename, path, import_time)"
+                " VALUES ('老照片','a.jpg','a.jpg',1)")
+    old.commit()
+    old.close()
+
+    conn = db.get_conn(p)
+    db.init_db(conn)
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(images)")}
+    assert "client_uid" in cols
+    assert db.get_image(conn, 1)["client_uid"] is None
+    db.init_db(conn)                     # 幂等
+    conn.close()
+
+
+# ---------------- rough_circle（后台预识别的起点圆缓存） ----------------
+
+def test_rough_circle_round_trips(conn):
+    from app import db as d
+
+    iid = d.create_image(conn, "A", "a.jpg", "p.jpg", "upload")
+    assert d.get_image(conn, iid)["rough_circle"] is None
+    d.set_image_rough_circle(conn, iid, '{"cx":1,"cy":2,"a":3,"b":3,"th":0}')
+    assert d.get_image(conn, iid)["rough_circle"].startswith('{"cx":1')
+
+
+def test_rough_circle_column_migration(tmp_path):
+    """老库没有 rough_circle 列：init_db 之后自动补上，老记录是 NULL。"""
+    import sqlite3
+
+    p = tmp_path / "old3.db"
+    old = sqlite3.connect(str(p))
+    old.execute("""CREATE TABLE images (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+        original_filename TEXT NOT NULL, path TEXT NOT NULL,
+        import_time INTEGER NOT NULL, import_source TEXT NOT NULL DEFAULT 'unknown',
+        tags TEXT NOT NULL DEFAULT '[]', favorite INTEGER NOT NULL DEFAULT 0,
+        transform TEXT, thumb_path TEXT, enhance TEXT, crop TEXT)""")
+    old.execute("INSERT INTO images (name, original_filename, path, import_time)"
+                " VALUES ('老照片','a.jpg','a.jpg',1)")
+    old.commit()
+    old.close()
+
+    conn = db.get_conn(p)
+    db.init_db(conn)
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(images)")}
+    assert "rough_circle" in cols
+    assert db.get_image(conn, 1)["rough_circle"] is None
+    db.init_db(conn)
+    conn.close()

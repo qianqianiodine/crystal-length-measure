@@ -146,6 +146,9 @@ def main() -> None:
         threading.Thread(target=_open_browser_later, args=(port,), daemon=True).start()
     # 端口是我们挑的，app 里算手机地址和二维码要用 —— 在 uvicorn 导入 app 之前告诉它
     os.environ["JLTX_PORT"] = str(port)
+    # 后台预识别孔：给文件夹里的照片提前算起点圆（约 5 秒一张，一次一张）。
+    # 只有从 启动.bat / 开机自启 走 app.launch 才开；测试用 TestClient 不会设它。
+    os.environ["JLTX_BG_DETECT"] = "1"
     try:
         # proxy_headers=False：本机没有反向代理，关掉 X-Forwarded-For 解析，
         # 免得来源地址能被伪造。

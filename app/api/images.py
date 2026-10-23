@@ -13,6 +13,7 @@ import binascii
 import json
 import os
 import re
+import sqlite3
 import sys
 from datetime import datetime
 
@@ -21,7 +22,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from app import config, db, exporter, imageio, measure, storage, thumbs
+from app import bgdetect, config, db, exporter, imageio, measure, storage, thumbs
 from app.db import get_db
 
 router = APIRouter(prefix="/api", tags=["images"])
@@ -125,19 +126,41 @@ def _thumb_ver(conn, row, lines) -> int:
 
 
 def _import_one(conn, filename: str, data: bytes, source: str,
-                folder: int | None = None) -> dict:
+                folder: int | None = None, *, name: str | None = None,
+                tags: str = "[]", client_uid: str | None = None) -> dict:
     """存盘 + 落库。坏图片抛 ValueError（消息可直接给用户看）。
 
     `folder`：图库当时在看哪个文件夹，这张就归到哪儿 —— 和「≥2 张走待确认列表」
     那条路一致。**2026-10-06 之前这里是漏的**：单张导入走 direct，folder 直接丢了，
     照片落进「未分类」，只在「全部照片」里看得见（用户报的就是这个）。
     ⚠️ folder 存不存在由调用方保证（`_ingest` 开头查过一次），这里只管放。
+
+    `name/tags`：手机离线队列在拍照时就填好了编号和孔位，必须原样入库；
+    不传就是老行为（从文件名派生名字、标签为空）。
+    `client_uid`：手机那边的唯一编号。同一个 uid 并发进来两次时，第二条 INSERT
+    会撞唯一索引 —— 把刚写下的原图挪进 trash，再返回已有那张，绝不留孤儿文件。
     """
+    # 名字先校验、再落盘：校验失败时还没写文件，不会留孤儿。
+    final = _validate_name(name) if name else _name_from_file(filename)
     stored = storage.store_original(data)          # 先验后写
-    name = _unique_name(conn, _name_from_file(filename))
-    iid = db.create_image(conn, name, filename or "未命名", stored, source)
+    final = _unique_name(conn, final)
+    try:
+        iid = db.create_image(conn, final, filename or "未命名", stored, source,
+                              tags=tags, client_uid=client_uid)
+    except sqlite3.IntegrityError:
+        try:
+            storage.trash_file(storage.resolve_path(stored))
+        except Exception:                          # noqa: BLE001
+            # 清不掉孤儿只是多占点磁盘；绝不能让它盖住真正的返回值。
+            pass
+        row = db.get_image_by_uid(conn, client_uid)
+        if row is None:
+            raise
+        return _summary(conn, row)
     if folder is not None:
         db.set_image_folders(conn, iid, [folder])
+        # 进了文件夹 = 用户肯定会看 —— 排队预识别起点圆。
+        bgdetect.enqueue([iid])
     return _summary(conn, db.get_image(conn, iid))
 
 
@@ -208,7 +231,8 @@ def _stage_failed(conn, filename, size, reason, source, folder_id=None, tags: st
 
 
 async def _ingest(conn, files, *, mode: str, source: str, default_name: str,
-                  folder: int | None = None) -> dict:
+                  folder: int | None = None, name: str | None = None,
+                  tag: str | None = None, uid: str | None = None) -> dict:
     """把一批上传的文件收进来。mode 决定直接入库还是先进待确认列表。
 
     - direct：老行为，逐张入库，坏文件进 failed 数组
@@ -221,6 +245,10 @@ async def _ingest(conn, files, *, mode: str, source: str, default_name: str,
     （direct 直接放进去，pending 记在行上、确认导入时放）。
     传了不存在的 id（图库那边的文件夹在两次请求之间被删了）当 None，
     不 400 —— 用户没做错什么，照片进「未分类」就好。
+
+    name / tag / uid：手机离线队列在拍照时就填好了名字和孔位，回到有网自动
+    补传时一起带上来。uid 是幂等键 —— 网络差时"电脑收到了、手机没收到回执"
+    是常态，同一个 uid 重传只会入库一次。电脑端不传这三个参数，行为不变。
     """
     if mode == "auto":
         mode = "pending" if len(files) >= 2 else "direct"
@@ -228,10 +256,19 @@ async def _ingest(conn, files, *, mode: str, source: str, default_name: str,
         folder = None
 
     ok, failed, staged = [], [], []
+    duplicate = False
     for up in files:
         filename = up.filename or default_name
         size = 0
         try:
+            # 同一个 uid 已经入过库：手机上次其实传成功了，只是没收到回执。
+            # 在读文件**之前**判掉，省一次读盘，也不会多写一份原图。
+            if mode == "direct" and uid:
+                row = db.get_image_by_uid(conn, uid)
+                if row is not None:
+                    ok.append(_summary(conn, row))
+                    duplicate = True
+                    continue
             if up.size and up.size > MAX_FILE_BYTES:
                 raise ValueError(f"这个文件超过 {MAX_FILE_BYTES // 1024 // 1024} MB，太大了")
             # 逐个读、逐个存 —— 不要先 read() 成一个列表，那会把整批堆在内存里
@@ -246,7 +283,11 @@ async def _ingest(conn, files, *, mode: str, source: str, default_name: str,
             if mode == "pending":
                 staged.append(_stage_one(conn, filename, data, size, source, folder, tags))
             else:
-                ok.append(_import_one(conn, filename, data, source, folder))
+                # 手机离线队列会把拍照时填好的名字/孔位一起带上来。
+                # 标签数组就一个元素 —— 手机界面一张照片只有一个孔位。
+                explicit = json.dumps([tag]) if tag else "[]"
+                ok.append(_import_one(conn, filename, data, source, folder,
+                                      name=name, tags=explicit, client_uid=uid))
         except Exception as e:                       # noqa: BLE001 —— 一个坏文件不该中断整批
             reason = _reason(e)
             if mode == "pending":
@@ -256,7 +297,8 @@ async def _ingest(conn, files, *, mode: str, source: str, default_name: str,
         finally:
             await up.close()
 
-    return {"ok": ok, "failed": failed, "staged": staged}
+    return {"ok": ok, "failed": failed, "staged": staged,
+            "duplicate": duplicate}
 
 
 # ---------------- 接口 ----------------
@@ -469,11 +511,15 @@ def batch_folders(body: BatchFoldersIn, conn=Depends(get_db)) -> dict:
             raise HTTPException(400, "找不到这个文件夹，可能已经被删了")
 
     updated = 0
+    queued = []
     for iid in ids:
         final = (folder_ids if body.mode == "replace"
                  else sorted(set(db.image_folders(conn, iid)) | set(folder_ids)))
         db.set_image_folders(conn, iid, final)
+        if final:
+            queued.append(iid)          # 还在文件夹里的，排进后台预识别
         updated += 1
+    bgdetect.enqueue(queued)
     return {"updated": updated}
 
 

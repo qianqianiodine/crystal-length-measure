@@ -9,12 +9,12 @@
 """
 import time
 
-from fastapi import (APIRouter, Depends, File, HTTPException, Query, Request,
-                     Response, UploadFile)
+from fastapi import (APIRouter, Depends, File, Form, HTTPException, Query,
+                     Request, Response, UploadFile)
 from fastapi.responses import HTMLResponse
 
 from app import storage
-from app.api.images import MAX_FILES, _ingest
+from app.api.images import MAX_FILES, _TAG_RE, _ingest
 from app.db import get_db
 
 router = APIRouter(tags=["mobile"])
@@ -168,16 +168,58 @@ _PAGE = """<!doctype html>
                   border-radius: 4px; border: 1px solid var(--rule);
                   background: var(--raise); color: var(--text); }
   .pfoot #pok { background: var(--ref); color: #241c08; border-color: var(--ref); }
+  /* 待上传（本机队列）。和「待确认导入」长得一样，都是为了少一套视觉语言。 */
+  #qsec { margin-top: 26px; border-top: 1px solid var(--rule); padding-top: 18px; }
+  #qsec h2 { font-size: 15px; font-weight: 600; margin: 0 0 12px; color: var(--ref); }
+  .qrow { background: var(--panel); border: 1px solid var(--rule); border-radius: 3px;
+          padding: 10px 11px; margin-bottom: 8px; }
+  .qrow.bad { border-color: #5a3630; }
+  .qtop { display: flex; gap: 10px; align-items: center; }
+  .qtop img { flex: 0 0 54px; width: 54px; height: 54px; object-fit: contain;
+              border-radius: 2px; background: var(--raise); }
+  .qtop input { flex: 1 1 auto; min-width: 0; font: 16px var(--ui); color: var(--text);
+                background: var(--ink); border: 1px solid var(--rule);
+                border-radius: 3px; padding: 9px 10px; }
+  .qtop .rm { flex: 0 0 auto; background: none; border: 0; color: var(--mute);
+              font-size: 19px; padding: 10px 12px; }
+  .qbot { display: flex; gap: 6px; align-items: center; margin-top: 7px; }
+  .qno { flex: 1 1 auto; min-width: 0; font: 14px var(--ui); color: var(--text);
+         background: var(--ink); border: 1px solid var(--rule); border-radius: 3px;
+         padding: 8px 9px; }
+  .qbot select.tg { flex: 0 0 auto; width: auto; font: 14px var(--ui); color: var(--text);
+                    background: var(--ink); border: 1px solid var(--rule);
+                    border-radius: 3px; padding: 8px 4px; }
+  .qst { margin: 7px 0 0; color: var(--mute); font-size: 13px; }
+  .qrow.bad .qst { color: #e8746a; }
+  #qall { display: block; width: 100%; margin-top: 4px; font: 600 15px var(--ui);
+          padding: 12px 0; border-radius: 4px; border: 1px solid var(--rule);
+          background: var(--raise); color: var(--text); }
+  .hint { color: var(--mute); font-size: 12.5px; margin-top: 20px; line-height: 1.7; }
+  /* 看大图。⚠️ [hidden] 那条不能省：下面给了 display:flex，UA 自带的
+     [hidden]{display:none} 压不住它，关不掉（#pend 踩过同一个坑）。 */
+  .pv { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 100;
+        background: rgba(0, 0, 0, .93); display: flex; align-items: center;
+        justify-content: center; padding: 18px; }
+  .pv[hidden] { display: none; }
+  .pv img { max-width: 100%; max-height: 100%; object-fit: contain; }
+  .pv #pvClose { position: absolute; top: 10px; right: 8px; background: none;
+                 border: 0; color: #fff; font-size: 26px; padding: 12px 16px; }
 </style>
 </head>
 <body>
 <main>
   <h1>传照片到电脑</h1>
-  <p class="sub">选好之后自动开始传，一张一张来，传完这里会告诉你结果。</p>
+  <p class="sub">选好照片先存在手机里，填好编号和孔位；回到有网的地方，这个页面会自动一张张传到电脑。</p>
 
   <label class="pick" id="btn">拍照 / 选照片
     <input type="file" accept="image/*" multiple hidden id="f">
   </label>
+
+  <section id="qsec" hidden>
+    <h2>待上传（<span id="qn">0</span> 张，约 <span id="qsize">0</span> MB）</h2>
+    <div id="qrows"></div>
+    <button id="qall" type="button">现在全部传</button>
+  </section>
 
   <section id="pend" hidden>
     <h2>待确认导入（<span id="pn">0</span> 张）</h2>
@@ -197,11 +239,17 @@ _PAGE = """<!doctype html>
     <ul id="list"></ul>
   </section>
   <p class="tail" id="tail"></p>
+  <p class="hint">照片传上去之前只存在这个浏览器里 —— 别清 Safari 数据；传图窗口每 2 小时要重新开一次。<br>
+    回到有网的地方，把这个页面放在前台，它会自动传。</p>
 </main>
+
+<div class="pv" id="pv" hidden>
+  <img id="pvImg" alt="">
+  <button type="button" id="pvClose" aria-label="关闭">✕</button>
+</div>
 
 <script>
 const token = location.pathname.split('/')[2] || '';
-const btn = document.getElementById('btn');
 const input = document.getElementById('f');
 const list = document.getElementById('list');
 const tail = document.getElementById('tail');
@@ -278,65 +326,422 @@ function markSent(ids, st, cls) {
   paintSent();
 }
 
+// ---------- 本机待上传队列（断网也不丢） ----------
+// 照片先写进手机浏览器的 IndexedDB，再慢慢往电脑传。晶体房信号差的时候
+// fetch 会失败 —— 失败**不删**这一条，回到有网的地方自动接着传。
+// ⚠️ 存的是原图 File，不压缩：测量靠原图。
+const QDB_NAME = 'jltx_offline';
+const QSTORE = 'queue';
+const GRACE_MS = 30000;          // 停手 30 秒才自动传，免得名字填一半就被抢走
+const RETRY_MS = 15000;          // 有网时每 15 秒试一次
+const TIMEOUT_MS = 60000;        // 单张 60 秒没传完就当网络失败
+const FORBID_PAUSE_MS = 60000;   // 「手机传图」关了以后，别每 15 秒砸一次
+
+const qsec = document.getElementById('qsec');
+const qrows = document.getElementById('qrows');
+const qn = document.getElementById('qn');
+const qsize = document.getElementById('qsize');
+let Q = [];
+let syncing = false;
+let pausedUntil = 0;
+let QDB = null;
+const qSaveTimers = new Map();
+
+function onLine() {
+  return typeof navigator === 'undefined' || navigator.onLine !== false;
+}
+
+function newUid() {
+  try {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+  } catch (e) { /* 老浏览器没有 randomUUID，走下面的回退 */ }
+  return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2)
+         + Math.random().toString(36).slice(2);
+}
+
+// 文件名 → 默认名字。和电脑端 _name_from_file 同一个规则：去目录、去扩展名。
+// 手机文件名不会有反斜杠，所以这里不处理 Windows 路径。
+function defaultName(filename) {
+  const base = String(filename || '').split('/').pop();
+  const dot = base.lastIndexOf('.');
+  return (dot > 0 ? base.slice(0, dot) : base) || '手机照片';
+}
+
+function qOpen() {
+  if (QDB) return Promise.resolve(QDB);
+  return new Promise((resolve, reject) => {
+    let req;
+    try { req = indexedDB.open(QDB_NAME, 1); }
+    catch (e) { reject(e); return; }
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(QSTORE)) {
+        db.createObjectStore(QSTORE, { keyPath: 'uid' });
+      }
+    };
+    req.onsuccess = () => { QDB = req.result; resolve(QDB); };
+    req.onerror = () => reject(req.error || new Error('手机存储打不开'));
+  });
+}
+
+function qAll() {
+  return qOpen().then(db => new Promise((resolve, reject) => {
+    const req = db.transaction(QSTORE, 'readonly').objectStore(QSTORE).getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error || new Error('读不出手机里的照片'));
+  }));
+}
+
+function qPut(it) {
+  return qOpen().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(QSTORE, 'readwrite');
+    tx.objectStore(QSTORE).put(it);
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error || new Error('存不进手机'));
+    tx.onabort = () => reject(tx.error || new Error('存不进手机'));
+  }));
+}
+
+function qDel(key) {
+  return qOpen().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(QSTORE, 'readwrite');
+    tx.objectStore(QSTORE).delete(key);
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error || new Error('手机存储出错'));
+  }));
+}
+
+// 只把要留的字段写进去。_url 是缩略图的临时地址，重开页面就失效，
+// 没必要存（也不该存）。status=sending 写回 wait：页面被锁屏重载后
+// 不能一直卡在"正在传"。
+function qSave(it) {
+  return qPut({
+    uid: it.uid, blob: it.blob, filename: it.filename,
+    name: it.name || '', no: it.no || '', tag: it.tag || '',
+    folderId: it.folderId === undefined ? null : it.folderId,
+    createdAt: it.createdAt,
+    touchedAt: it.touchedAt || it.createdAt,
+    status: it.status === 'sending' ? 'wait' : (it.status || 'wait'),
+    error: it.error || '',
+  });
+}
+
+function thumbOf(it) {
+  if (typeof it._url === 'string') return it._url;
+  try { it._url = URL.createObjectURL(it.blob); }
+  catch (e) { it._url = ''; }
+  return it._url;
+}
+
+// 看大图：队列里的缩略图只有 54px，认不出晶体。点一下铺满全屏看原图。
+// 用的是手机上那张 Blob 的临时地址 —— 断网也能看，不经过电脑。
+function openPreview(src) {
+  if (!src) return;
+  document.getElementById('pvImg').src = src;
+  document.getElementById('pv').hidden = false;
+}
+
+// 这一张要被删掉/传走了：如果大图正开着它，先关掉再回收地址，
+// 否则屏幕上会剩一块黑底（图被回收了）。
+function closePreviewIf(src) {
+  const pv = document.getElementById('pv');
+  if (!pv.hidden && document.getElementById('pvImg').src === src) {
+    pv.hidden = true;
+    document.getElementById('pvImg').src = '';
+  }
+}
+
+document.getElementById('pv').addEventListener('click', () => {
+  document.getElementById('pv').hidden = true;
+  document.getElementById('pvImg').src = '';
+});
+
+function paintQueue() {
+  qsec.hidden = !Q.length;
+  qn.textContent = String(Q.length);
+  let total = 0;
+  for (const it of Q) total += (it.blob && it.blob.size) || 0;
+  qsize.textContent = (total / 1048576).toFixed(1);
+  qrows.innerHTML = '';
+  Q.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+  for (const it of Q) qrows.append(queueRow(it));
+}
+
+// 一个字都没改，只是用户碰了这一行：更新"停手"计时，并防抖写回手机。
+// ⚠️ 这里**不能** paintQueue()：一重画输入框就失焦，手机键盘会弹回去。
+function touch(it, row) {
+  it.touchedAt = Date.now();
+  if (it.status === 'error') {
+    it.status = 'wait';
+    it.error = '';
+    if (row) {
+      row.classList.remove('bad');
+      const st = row.querySelector('.qst');
+      if (st) st.textContent = '等有网自动传';
+    }
+  }
+  clearTimeout(qSaveTimers.get(it.uid));
+  qSaveTimers.set(it.uid, setTimeout(() => {
+    qSaveTimers.delete(it.uid);
+    qSave(it).catch(() => {});
+  }, 350));
+}
+
+function queueRow(it) {
+  const row = document.createElement('div');
+  row.className = 'qrow' + (it.status === 'error' ? ' bad' : '');
+
+  const top = document.createElement('div');
+  top.className = 'qtop';
+  const img = document.createElement('img');
+  img.src = thumbOf(it);
+  img.alt = '';
+  img.title = '点一下看大图';
+  // 缩略图背后是几 MB 的原图：不让浏览器一口气把所有行都解码，
+  // 96 张全解开会把 iPhone 的内存吃爆。
+  img.loading = 'lazy';
+  img.decoding = 'async';
+  img.addEventListener('click', () => openPreview(img.src));
+  top.append(img);
+
+  const inp = document.createElement('input');
+  inp.type = 'text';
+  inp.value = it.name || '';
+  inp.placeholder = '孔位（如 A1-1）或名字，留空用手机文件名';
+  inp.addEventListener('input', () => {
+    it.name = inp.value;
+    touch(it, row);
+  });
+  top.append(inp);
+
+  const rm = document.createElement('button');
+  rm.className = 'rm';
+  rm.type = 'button';
+  rm.textContent = '✕';
+  rm.title = '从手机里删掉这一张';
+  rm.addEventListener('click', async () => {
+    // 正在传的时候不让删：上传请求已经发出去了，就算本地删掉，电脑那边
+    // 也可能已经入库 —— 记录里会凭空多一张"我明明删了"的照片。
+    if (it.status === 'sending') {
+      tail.textContent = '这张正在传，等它传完再删';
+      return;
+    }
+    // 这张可能只存在手机里（网页拍的照片不进相册）—— 删之前必须问一句。
+    if (!confirm('这张还没传上去，删掉就找不回来了。确定吗？')) return;
+    clearTimeout(qSaveTimers.get(it.uid));
+    qSaveTimers.delete(it.uid);
+    try { await qDel(it.uid); } catch (e) { /* 手机存储坏了，下面照样从界面拿掉 */ }
+    const i = Q.indexOf(it);
+    if (i >= 0) Q.splice(i, 1);
+    closePreviewIf(it._url);
+    if (it._url) URL.revokeObjectURL(it._url);
+    paintQueue();
+  });
+  top.append(rm);
+
+  const bot = document.createElement('div');
+  bot.className = 'qbot';
+  const no = document.createElement('input');
+  no.type = 'text';
+  no.className = 'qno';
+  no.placeholder = '编号';
+  no.title = '晶体板编号 —— 填了这张就改名成「编号-行-列-孔」';
+  no.maxLength = 60;
+  no.autocomplete = 'off';
+  no.spellcheck = false;
+  no.value = it.no || '';
+
+  const m = /^([A-H])([1-9]|1[0-2])-([12])$/.exec(it.tag || '');
+  const selA = mkSel(ROWS, m ? m[1] : '');
+  const selN = mkSel(COLS, m ? m[2] : '');
+  const selH = mkSel(HOLES, m ? (m[3] === '1' ? '孔1' : '孔2') : HOLES[0], false);
+
+  const sync = () => {
+    it.no = no.value;
+    it.tag = tagOf(selA, selN, selH);
+    // 编号留空 = 不动名字（可能用户在上面直接打了自由名字）
+    const nm = nameWithPlate(no.value.trim(), it.tag);
+    if (nm) { it.name = nm; inp.value = nm; }
+    touch(it, row);
+  };
+  for (const s of [selA, selN, selH]) s.addEventListener('change', sync);
+  let nt = null;
+  no.addEventListener('input', () => {
+    clearTimeout(nt);
+    nt = setTimeout(sync, 400);
+  });
+  bot.append(no, selA, selN, selH);
+
+  const st = document.createElement('p');
+  st.className = 'qst';
+  if (it.status === 'sending') st.textContent = '正在传…';
+  else if (it.status === 'error') st.textContent = '没传上去：' + (it.error || '原因不明');
+  else if (it.error) st.textContent = it.error;
+  else if (!onLine()) st.textContent = '现在没网，等有网自动传';
+  else st.textContent = '等有网自动传';
+
+  row.append(top, bot, st);
+  return row;
+}
+
+async function qLoad() {
+  try {
+    const rows = await qAll();
+    Q = [];
+    let lost = 0;
+    for (const r of rows) {
+      if (!r || !r.uid || !r.blob) { lost++; continue; }
+      if (r.status === 'sending') r.status = 'wait';
+      r.touchedAt = r.touchedAt || r.createdAt || Date.now();
+      Q.push(r);
+    }
+    paintQueue();
+    if (Q.length) {
+      tail.textContent = `手机里还有 ${Q.length} 张没传，正在等网络`
+        + (lost ? `；另有 ${lost} 张读不出来了（手机存储可能被清理过）` : '');
+      syncQueue(false);
+    } else if (lost) {
+      // 浏览器在存储紧张时可能清掉某些记录。不能装作没发生。
+      tail.textContent = `有 ${lost} 张读不出来了（手机存储可能被清理过）`;
+    }
+  } catch (e) {
+    tail.textContent = '这个浏览器打不开本地存储，离线拍照用不了 —— 请用 Safari 打开';
+  }
+}
+
+// 传一张。返回 {ok, name} / {stop, why} / {fatal, why} / {why}。
+// 「stop」= 网络断了或窗口关了，这一轮别再试后面的；「fatal」= 这一张本身不行。
+function uploadOne(it) {
+  return new Promise(resolve => {
+    const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timer = ctl ? setTimeout(() => ctl.abort(), TIMEOUT_MS) : null;
+    const fd = new FormData();
+    fd.append('files', it.blob, it.filename);
+    if (it.name) fd.append('name', it.name);
+    if (it.tag) fd.append('tag', it.tag);
+    fd.append('uid', it.uid);
+    const q = new URLSearchParams({ mode: 'direct' });
+    if (it.folderId) q.set('folder', String(it.folderId));
+
+    fetch(`/m/${token}/upload?${q}`, {
+      method: 'POST', body: fd, signal: ctl ? ctl.signal : undefined,
+    }).then(async r => {
+      let d = null;
+      try { d = await r.json(); } catch (e) { /* 服务端没给 JSON，用下面的兜底文案 */ }
+      if (r.ok && d && d.ok && d.ok.length) {
+        resolve({ ok: true, name: d.ok[0].name || it.name || defaultName(it.filename) });
+      } else if (r.ok && d && d.failed && d.failed.length) {
+        resolve({ fatal: true, why: d.failed[0].reason || '这张传不上去' });
+      } else if (r.status === 403) {
+        pausedUntil = Date.now() + FORBID_PAUSE_MS;
+        resolve({ stop: true, why: '电脑上的「手机传图」关了（每 2 小时要重新开一次），回去点一下就会接着传' });
+      } else if (r.status === 400 || r.status === 422) {
+        resolve({ fatal: true, why: (d && d.detail) || '电脑说这张不行' });
+      } else {
+        resolve({ why: '电脑那边出了点问题，等会儿自动重试' });
+      }
+    }).catch(e => {
+      const why = e && e.name === 'AbortError'
+        ? '传得太慢，先留着，等网络好点再传'
+        : '连不上电脑，等有网会自动重试';
+      resolve({ stop: true, why });
+    }).finally(() => {
+      if (timer) clearTimeout(timer);
+    });
+  });
+}
+
+async function syncQueue(force) {
+  if (syncing || !Q.length) return;
+  if (Date.now() < pausedUntil) return;
+  if (!onLine()) { paintQueue(); return; }
+  const now = Date.now();
+  const todo = Q.filter(it => force
+    || now - (it.touchedAt || it.createdAt || 0) >= GRACE_MS);
+  if (!todo.length) return;
+
+  syncing = true;
+  try {
+    for (const it of todo) {
+      if (Q.indexOf(it) < 0) continue;      // 这一轮里被用户 ✕ 删掉了
+      it.status = 'sending';
+      it.error = '';
+      paintQueue();
+      const res = await uploadOne(it);
+
+      if (res.ok) {
+        try { await qDel(it.uid); } catch (e) { /* 传都传成了，删不掉就下次再删 */ }
+        const i = Q.indexOf(it);
+        if (i >= 0) Q.splice(i, 1);
+        closePreviewIf(it._url);
+        if (it._url) URL.revokeObjectURL(it._url);
+        // 用服务端返回的最终名字（可能带 " (2)"），传送记录才和电脑里一致。
+        SENT.push({ pid: null, name: res.name, st: '已入库', cls: 'ok', why: '' });
+        saveSent();
+        paintSent();
+        paintQueue();
+        tail.textContent = '已入库：' + res.name;
+      } else if (res.stop) {
+        it.status = 'wait';
+        it.error = res.why;
+        await qSave(it).catch(() => {});
+        paintQueue();
+        break;                              // 网络/窗口问题，后面的不用白试
+      } else if (res.fatal) {
+        it.status = 'error';
+        it.error = res.why;
+        await qSave(it).catch(() => {});
+        paintQueue();
+      } else {
+        it.status = 'wait';
+        it.error = res.why;
+        await qSave(it).catch(() => {});
+        paintQueue();
+      }
+    }
+  } finally {
+    syncing = false;
+  }
+  paintQueue();
+}
+
 input.addEventListener('change', async () => {
   const files = [...input.files];
   input.value = '';                       // 允许再选同一张
   if (!files.length) return;
 
-  btn.classList.add('busy');
-  btn.firstChild.textContent = '正在传…';
-  let done = 0, bad = 0;
-
-  // 手机上**恒为 pending**：单张也要停下来选文件夹、填孔位。
-  // （电脑端不一样 —— 那边一个请求带多个文件，≥2 张才进列表。）
-  const mode = 'pending';
-
-  // 一张一张传 —— 手机上看得见进度，也不用把整批堆在内存里。
-  // 每张先在**传送记录**里占一行：名字暂时用手机文件名，等用户在下面填好
-  // 编号 + 孔位，syncSentNames() 会把它改成「编号-行-列-孔」。
-  // ⚠️ 不在这里清空记录 —— 上一批那几条要一直留着（用户 2026-10-06 要的）。
+  let added = 0;
+  let bad = 0;
   for (const file of files) {
-    const rec = { pid: null, name: file.name, st: '上传中', cls: '', why: '' };
-    SENT.push(rec);
-    saveSent();
-    paintSent();
-
+    const it = {
+      uid: newUid(), blob: file, filename: file.name || '手机照片.jpg',
+      name: '', no: '', tag: '', folderId: currentFolderId(),
+      createdAt: Date.now(), touchedAt: Date.now(),
+      status: 'wait', error: '',
+    };
     try {
-      const fd = new FormData();
-      fd.append('files', file, file.name);
-      const q = new URLSearchParams({ mode });
-      if (DEFAULT_FOLDER !== null) q.set('folder', String(DEFAULT_FOLDER));
-      const r = await fetch(`/m/${token}/upload?${q}`, { method: 'POST', body: fd });
-      const d = await r.json();
-      if (r.ok && d.ok && d.ok.length) {
-        rec.name = d.ok[0].name || file.name;
-        rec.st = '已传到电脑';
-        done++;
-      } else if (r.ok && d.staged && d.staged.length) {
-        rec.pid = d.staged[0].id;      // 记住它，下面改名时要回来改这条记录
-        rec.name = d.staged[0].name || file.name;
-        rec.st = '已传到电脑';
-        done++;
-      } else {
-        throw new Error((d.failed && d.failed[0] && d.failed[0].reason)
-                        || d.detail || '没传上去');
-      }
-    } catch (err) {
-      rec.cls = 'bad';
-      rec.st = '失败';
-      rec.why = err.message;
+      await qSave(it);                    // 先存住 —— 存不住就别假装收了
+    } catch (e) {
       bad++;
+      tail.textContent = `手机空间不够，这张没存下来：${it.filename}`
+        + '（先把已经拍的传上去，再来拍）';
+      continue;
     }
-    saveSent();
-    paintSent();
+    Q.push(it);
+    added++;
+    paintQueue();
+    const rows = qrows.querySelectorAll('.qrow');
+    const last = rows[rows.length - 1];
+    if (last && last.scrollIntoView) last.scrollIntoView({ block: 'nearest' });
   }
 
-  btn.classList.remove('busy');
-  btn.firstChild.textContent = '再传几张';
-  tail.textContent = bad
-    ? `传完 ${done} 张，${bad} 张没成功`
-    : `传完 ${done} 张 —— 在下面起好名字，点「确认导入」`;
-  await loadPend();          // 传完把待确认列表刷新出来
+  if (added) {
+    tail.textContent = `已先存到手机（${added} 张），有网就会自动传到电脑`;
+    syncQueue(false);
+  } else if (!bad) {
+    tail.textContent = '';
+  }
+  await loadPend();          // 有网时顺便刷新一下电脑上的待确认列表
 });
 
 // ---------- 待确认导入列表 ----------
@@ -355,11 +760,18 @@ const pSaves = new Map();
 let pjError = '';
 
 async function pj(url, method, body) {
-  const r = await fetch(url, {
-    method,
-    headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  let r;
+  try {
+    r = await fetch(url, {
+      method,
+      headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch (e) {
+    // 晶体房里断网是常态：别让 fetch 的拒绝一路冒出去变成白屏。
+    pjError = '连不上电脑，等有网再试';
+    return null;
+  }
   if (r.ok) { pjError = ''; return r.json(); }
   // ⚠️ 失败不能一声不吭：手机上 `:` `/` `?` 就在符号键盘第一层，打个「A1/B2」很正常，
   // 服务端会 400 掉。那句中文本来就写好了，吞掉它的话输入框里还是用户打的字、
@@ -398,6 +810,8 @@ function pAdopt(d) {
 
 function paintPend() {
   FOLDERS = P.folders || [];
+  // 缓存一份：下次在晶体房里打开页面（断网）也能把文件夹下拉画出来。
+  try { localStorage.setItem('jltx.folders', JSON.stringify(FOLDERS)); } catch (e) {}
   paintBatchFolder();
   // 传送记录里的名字跟着这张表走（改名是在这张表上改的）。
   // ⚠️ 必须在这句 return **之前** —— 导完最后一张时 P.items 是空的，
@@ -449,6 +863,9 @@ function pendRow(it) {
     cur.name = d.name;
     cur.conflict = d.conflict;
     paintNote(row, cur);
+    // 传送记录里的名字跟着变。以前只在整表重画时同步，用户打完字不触发重画，
+    // 记录就一直挂着手机文件名（2026-10-22 用户报的"看不到手动命名"）。
+    syncSentNames();
   };
   inp.addEventListener('input', () => {
     clearTimeout(t);
@@ -512,6 +929,7 @@ function pendRow(it) {
       // 只更新冲突提示，不重画 —— 重画会把手机键盘顶掉，也会把别人行里
       // 刚打的字顶回旧值（它们还堵在定时器里）
       paintNote(row, it);
+      syncSentNames();
     });
   }
 
@@ -526,6 +944,7 @@ function pendRow(it) {
     pRowError(row, '');
     it.name = d.name;
     inp.value = d.name;
+    syncSentNames();
   };
   no.addEventListener('input', () => {
     it._no = no.value;
@@ -567,14 +986,27 @@ function paintNote(row, it) {
 }
 
 async function loadPend() {
-  const d = await pj(`/m/${token}/imports`, 'GET');
-  if (d) { pAdopt(d); }
+  // 断网时这一句会直接抛（fetch 拒绝）。手机的主流程已经改成"先存本地"，
+  // 这里失败就静默 —— 不能白屏，也不能弹个红字吓人。
+  try {
+    const d = await pj(`/m/${token}/imports`, 'GET');
+    if (d) { pAdopt(d); }
+  } catch (e) { /* 等有网再刷新 */ }
 }
 
 // ---------- 文件夹 ----------
 // 树是服务端随每次列表一起给的（不单独开 /m/<令牌>/folders）：
 // 每个文件夹改动都会跟着列表一起刷，少一个"树是旧的、行是新的"的窗口。
 let FOLDERS = [];
+// 断网时服务端给不了树，先用上次缓存的那份把下拉画出来。
+// 手机锁屏重载很常见；没有这个缓存，晶体房里文件夹下拉会是空的。
+try {
+  const cached = localStorage.getItem('jltx.folders');
+  if (cached) {
+    const arr = JSON.parse(cached);
+    if (Array.isArray(arr)) FOLDERS = arr;
+  }
+} catch (e) { FOLDERS = []; }
 
 // 手机页是从电脑上的二维码进来的，地址里带着"你在图库看的那个文件夹"。
 // 读不到 / 解析不出 / 不是正整数 → null = 不放进文件夹。
@@ -586,6 +1018,21 @@ const DEFAULT_FOLDER = (() => {
   const n = Number(v);
   return n > 0 ? n : null;
 })();
+
+// 「这批照片放到」的当前值：扫码 URL 带过来的优先，没有就用上次选的。
+// 队列里的每一行在建立时就记下这个值 —— 回有网后据此归文件夹。
+let batchFolderId = DEFAULT_FOLDER;
+try {
+  if (batchFolderId === null) {
+    const saved = localStorage.getItem('jltx.folder');
+    if (saved !== null && /^[0-9]+$/.test(saved)) {
+      const n = Number(saved);
+      batchFolderId = n > 0 ? n : null;
+    }
+  }
+} catch (e) { /* 浏览器禁了 localStorage，就按「不放进文件夹」 */ }
+
+function currentFolderId() { return batchFolderId; }
 
 // 「不放进文件夹」永远排第一：它是默认，也是选错时的退路。
 function fillFolderSelect(sel, value) {
@@ -660,17 +1107,29 @@ function nameWithPlate(no, tag) {
 }
 
 pfolder.addEventListener('change', async () => {
+  batchFolderId = folderValue(pfolder);
+  try {
+    if (batchFolderId === null) localStorage.removeItem('jltx.folder');
+    else localStorage.setItem('jltx.folder', String(batchFolderId));
+  } catch (e) { /* 存不了就只管这一次 */ }
+  // 还没传上去的行跟着改 —— 和电脑上「这批放到」是同一个语义。
+  for (const it of Q) {
+    it.folderId = batchFolderId;
+    qSave(it).catch(() => {});
+  }
+  paintQueue();
+
   await pFlushNames();         // 整表重画之前，先把排队的名字发出去
-  const d = await pj(`/m/${token}/imports/folder`, 'PUT', { folder_id: folderValue(pfolder) });
-  if (d) { pAdopt(d); }
-  else tail.textContent = pjError || '没存上，再试一次';
+  try {
+    const d = await pj(`/m/${token}/imports/folder`, 'PUT', { folder_id: batchFolderId });
+    if (d) { pAdopt(d); }
+  } catch (e) { /* 断网：队列里已经记下了，有网再看电脑上的列表 */ }
 });
 
-// 整批那个下拉停在"第一行的值"上 —— 行与行不一致时它显示的是第一行，
-// 改它 = 下面所有行都变（用户看得见每一行跟着动，不会误以为只改了第一行）。
+// 整批那个下拉显示当前选择。手机上新流程以**本机队列**为准，
+// 所以不再拿电脑上那份待确认列表的第一行来覆盖用户的选择。
 function paintBatchFolder() {
-  const v = P.items.find(it => it.status === 'ok' || it.status === 'failed');
-  fillFolderSelect(pfolder, v ? v.folder_id : DEFAULT_FOLDER);
+  fillFolderSelect(pfolder, batchFolderId);
 }
 
 // 把还在等那 400ms 的改名立刻都发出去，并等服务端都收下。
@@ -720,7 +1179,22 @@ document.getElementById('pno').addEventListener('click', async () => {
 });
 
 paintSent();         // 先把这次的传送记录画出来（存在 sessionStorage 里的）
+paintBatchFolder();  // 断网也能把文件夹下拉画出来（用上次缓存的那棵树）
+qLoad();             // 读手机里还没传的照片；有网就自动接着传
 loadPend();          // 打开页面就先看有没有上次没确认的
+
+// 回到有网 / 回到这个页面，都试着补传一次。
+window.addEventListener('online', () => syncQueue(false));
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) syncQueue(false);
+});
+setInterval(() => {
+  if (!document.hidden) syncQueue(false);
+}, RETRY_MS);
+document.getElementById('qall').addEventListener('click', () => {
+  pausedUntil = 0;
+  syncQueue(true);
+});
 </script>
 </body>
 </html>
@@ -742,6 +1216,9 @@ def mobile_page(token: str) -> HTMLResponse:
 @router.post("/m/{token}/upload")
 async def mobile_upload(token: str, files: list[UploadFile] = File(...),
                         mode: str = "auto", folder: int | None = None,
+                        name: str | None = Form(None),
+                        tag: str | None = Form(None),
+                        uid: str | None = Form(None),
                         conn=Depends(get_db)) -> dict:
     """手机上传。
 
@@ -751,8 +1228,22 @@ async def mobile_upload(token: str, files: list[UploadFile] = File(...),
 
     folder 来自扫码时二维码里带的 `?folder=`（图库当时在看的文件夹）。在**查询串**
     上而不是路径上，所以不影响 lan_guard 的安全模型 —— 它比的是 request.url.path。
+
+    name / tag / uid 是离线队列用的（2026-10-22）：
+    - name：拍照时填的编号 + 孔位拼出来的名字；空 = 从文件名派生（老行为）。
+    - tag：孔位（B5-1）；只认服务端那一份 `_TAG_RE`，别的形状直接 400。
+    - uid：这张照片在手机上的唯一编号。同一个 uid 重传只会入库一次 ——
+      网络差的时候"电脑收到了、手机没收到回执"是常态。
     """
     if len(files) > MAX_FILES:
         raise HTTPException(400, f"一次最多传 {MAX_FILES} 张")
+    name = (name or "").strip() or None
+    tag = (tag or "").strip() or None
+    if tag and not _TAG_RE.fullmatch(tag):
+        raise HTTPException(400, f"标签「{tag}」不对，应该是 A1-1 这样的")
+    uid = (uid or "").strip() or None
+    if uid and len(uid) > 64:
+        raise HTTPException(400, "这张照片的编号太长了")
     return await _ingest(conn, files, mode=mode, source="mobile",
-                         default_name="手机照片", folder=folder)
+                         default_name="手机照片", folder=folder,
+                         name=name, tag=tag, uid=uid)

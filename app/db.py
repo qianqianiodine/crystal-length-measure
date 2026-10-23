@@ -27,7 +27,13 @@ CREATE TABLE IF NOT EXISTS images (
     transform         TEXT,
     thumb_path        TEXT,
     enhance           TEXT,
-    crop              TEXT
+    crop              TEXT,
+    -- 手机离线队列给这张照片的唯一编号。网络差的时候手机会重试同一张，
+    -- 靠它保证只入库一次。电脑端上传的一律是 NULL。
+    client_uid        TEXT,
+    -- 后台预识别出来的起点圆（JSON）。只给"打开图片"当起点用，
+    -- **不是**正式标定 —— 正式标定在 calibrations 表里。
+    rough_circle      TEXT
 );
 
 CREATE TABLE IF NOT EXISTS calibrations (
@@ -154,6 +160,8 @@ MIGRATIONS = [
     ("images", "crop", "TEXT"),
     ("pending_imports", "folder_id", "INTEGER"),
     ("pending_imports", "tags",      "TEXT NOT NULL DEFAULT '[]'"),
+    ("images", "client_uid", "TEXT"),
+    ("images", "rough_circle", "TEXT"),
 ]
 
 
@@ -170,6 +178,12 @@ def init_db(conn: sqlite3.Connection) -> None:
     """建表 + 补列。幂等，可重复调用。"""
     conn.executescript(SCHEMA)
     _migrate(conn)
+    # 唯一索引必须等 _migrate 补完列再建 —— 放 SCHEMA 里的话，老库执行
+    # executescript 时还没有 client_uid 这一列，启动直接报错。
+    # 部分索引（WHERE ... IS NOT NULL）允许电脑端那批 NULL 同时存在。
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_images_uid"
+        " ON images(client_uid) WHERE client_uid IS NOT NULL")
     conn.commit()
 
 
@@ -177,11 +191,13 @@ def init_db(conn: sqlite3.Connection) -> None:
 
 def create_image(conn, name: str, original_filename: str, path: str,
                  import_source: str, transform: str | None = None,
-                 tags: str = "[]") -> int:
+                 tags: str = "[]", client_uid: str | None = None) -> int:
     cur = conn.execute(
         "INSERT INTO images (name, original_filename, path, import_time, "
-        "import_source, tags, favorite, transform) VALUES (?,?,?,?,?,?,0,?)",
-        (name, original_filename, path, int(time.time()), import_source, tags, transform),
+        "import_source, tags, favorite, transform, client_uid)"
+        " VALUES (?,?,?,?,?,?,0,?,?)",
+        (name, original_filename, path, int(time.time()), import_source, tags,
+         transform, client_uid),
     )
     conn.commit()
     return int(cur.lastrowid)
@@ -189,6 +205,19 @@ def create_image(conn, name: str, original_filename: str, path: str,
 
 def get_image(conn, image_id: int) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM images WHERE id=?", (image_id,)).fetchone()
+
+
+def get_image_by_uid(conn, uid: str | None) -> sqlite3.Row | None:
+    """手机离线队列重试时认人用的。uid 为空直接返回 None（电脑端全是空）。"""
+    if not uid:
+        return None
+    return conn.execute("SELECT * FROM images WHERE client_uid=?", (uid,)).fetchone()
+
+
+def set_image_rough_circle(conn, image_id: int, raw: str) -> None:
+    """存后台预识别出来的起点圆（JSON 字符串）。只写缓存，不碰 calibrations。"""
+    conn.execute("UPDATE images SET rough_circle=? WHERE id=?", (raw, image_id))
+    conn.commit()
 
 
 # 画廊的排序方式。只认这几个键 —— 用户输入**绝不**拼进 SQL。

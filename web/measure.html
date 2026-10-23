@@ -2091,10 +2091,6 @@ function scopeName() {
   return FOLDER_NAMES[S.scope] || '这个文件夹';
 }
 
-// 某个文件夹 id 叫什么（下拉框里要用）。查不到就空串 ——
-// 显示成 "undefined-名字" 比不显示前缀还糟。
-const folderName = id => FOLDER_NAMES[String(id)] || '';
-
 function writeScopeUrl() {
   const parts = [];
   if (S.imageId !== null) parts.push(`id=${S.imageId}`);
@@ -2120,15 +2116,10 @@ $('scopeAll').addEventListener('click', async () => {
 // ---------- 照片列表 ----------
 // 下拉框里那一行写什么。纯函数：不碰 DOM、不读全局 —— 这样它能被
 // tests/web_behavior_check.mjs 从源码里抠出来单独跑（整页在假 DOM 里跑不起来）。
-// ⚠️ 只带**最里面那层**文件夹名，不带整条路径：用户说了名字别太长，
-//    而且这和导出的命名规则一致（export_plan 的前缀也是直接父文件夹的名字）。
-function photoLabel(it, nameOf) {
-  const fn = (it.folders && it.folders.length) ? (nameOf(it.folders[0]) || '') : '';
-  const tg = (it.tags && it.tags.length) ? it.tags[0] : '';
-  const head = fn && tg ? `${fn}-${tg}`
-             : fn       ? `${fn}-${it.name}`
-             : tg       ? tg
-             :            it.name;
+// ⭐ 2026-10-23 用户要求：**只写照片名字**（编号-排-列），不要文件夹前缀。
+//    和图库卡片上那行「孔位」文案保持一致；名字里本来就有编号。
+function photoLabel(it) {
+  const head = it.name;
   return it.line_count ? `${head}（已量 ${it.line_count} 条）` : head;
 }
 
@@ -2147,7 +2138,7 @@ async function loadPhotos(selectId) {
     for (const it of d.items) {
       const o = document.createElement('option');
       o.value = String(it.id);
-      o.textContent = photoLabel(it, folderName);
+      o.textContent = photoLabel(it);
       sel.append(o);
     }
     // 上限 1000。超了就明说还有多少张没列出来 —— 静默截断会让用户

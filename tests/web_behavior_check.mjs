@@ -190,6 +190,38 @@ function makePage(htmlFile, pathname, search = '') {
   const store = new Map();
   const sstore = new Map();          // sessionStorage 另开一份，别和 localStorage 混
   const listeners = {};
+
+  // 手机页把待上传的照片存在 IndexedDB 里（离线队列）。Node 没有 indexedDB，
+  // 这里给一个只实现页面用到的那几个方法的内存壳子：open / createObjectStore /
+  // transaction / put / delete / getAll。写入和事务完成用微任务回调，和真浏览器
+  // 一样是异步的 —— 页面里 await qSave() 的时序才测得出来。
+  const qdata = new Map();
+  let qcreated = false;
+  const qstore = {
+    put: v => { qdata.set(v.uid, v); const r = {}; queueMicrotask(() => r.onsuccess && r.onsuccess()); return r; },
+    delete: k => { qdata.delete(k); const r = {}; queueMicrotask(() => r.onsuccess && r.onsuccess()); return r; },
+    getAll: () => { const r = { result: [...qdata.values()] }; queueMicrotask(() => r.onsuccess && r.onsuccess()); return r; },
+  };
+  const qdb = {
+    objectStoreNames: { contains: () => qcreated },
+    createObjectStore: () => { qcreated = true; return qstore; },
+    transaction: () => {
+      const tx = { objectStore: () => qstore };
+      queueMicrotask(() => queueMicrotask(() => tx.oncomplete && tx.oncomplete()));
+      return tx;
+    },
+    close: () => {},
+  };
+  const fakeIDB = {
+    open: () => {
+      const req = { result: qdb };
+      queueMicrotask(() => {
+        if (!qcreated && req.onupgradeneeded) req.onupgradeneeded();
+        if (req.onsuccess) req.onsuccess();
+      });
+      return req;
+    },
+  };
   const win = {
     addEventListener(t, fn) { (listeners[t] ||= []).push(fn); },
     removeEventListener() {},
@@ -199,8 +231,19 @@ function makePage(htmlFile, pathname, search = '') {
   const location = { pathname, search, href: '' };
   win.location = location;
   const sandbox = {
-    console, setTimeout, clearTimeout, setInterval, clearInterval,
+    console, setTimeout, clearTimeout, clearInterval,
+    // 手机页每 15 秒试一次补传；这个长定时器不能把 node 进程钉住，
+    // 否则检查跑完 node 不退出。unref() 之后它照样会在进程活着时触发。
+    setInterval: (fn, ms, ...a) => {
+      const id = setInterval(fn, ms, ...a);
+      if (id && id.unref) id.unref();
+      return id;
+    },
     URLSearchParams, URL, document: doc, window: win, location,
+    indexedDB: fakeIDB,
+    navigator: { onLine: true },
+    crypto: { randomUUID: () => 'uid-' + Math.random().toString(36).slice(2) },
+    AbortController,
     history: { replaceState() {}, pushState() {}, back() {} },
     localStorage: {
       getItem: k => (store.has(k) ? store.get(k) : null),
@@ -500,8 +543,11 @@ async function mobileChecks(file) {
   const page = makePage(file, '/m/tok123');
   // `get P()` 而不是 `P: P` —— P 是 let 绑定的，直接存下来会钉住旧对象
   run(page, 'globalThis.__m = { pendRow, loadPend, paintPend, pAdopt, prows,'
-    + ' fillFolderSelect,'
-    + ' pSaveMap: pSaves, get P() { return P; }, setP: d => { P = d; }, tail };');
+    + ' fillFolderSelect, syncQueue, qLoad, paintQueue, openPreview,'
+    + ' pSaveMap: pSaves, get P() { return P; }, setP: d => { P = d; },'
+    + ' get Q() { return Q; }, setSent: d => { SENT = d; paintSent(); },'
+    + ' setFolder: id => { batchFolderId = id; },'
+    + ' resetPause: () => { pausedUntil = 0; }, tail };');
   const m = page.context.__m;
   await sleep(20);        // 同上：等页面启动时那次 loadPend() 先落地
 
@@ -603,16 +649,18 @@ async function mobileChecks(file) {
   check('F2 每行不再有文件夹下拉（整批那个说了算）',
         !fRow.querySelector('select.pf'));
 
-  // ---- F3：单张也进待确认列表 ----
-  // 真的触发一次上传（文件选择框的 change），再看它发出去的 URL。
-  // 沙箱里有 FormData 的替身（见 makePage），所以这条路能跑通。
+  // ---- F3：选好照片先存进本机队列 ----
+  // 2026-10-22 起：晶体房网络差，照片必须先存住再慢慢传。联网时也走同一条路，
+  // 只是停手 30 秒（或点「现在全部传」）就立刻传走。
+  page.calls.length = 0;
   const fin = page.doc.getElementById('f');
-  fin.files = [{ name: 'x.jpg' }];
-  fin.dispatch('change');
-  await sleep(50);
-  check('F3 上传时恒为 pending（单张也停下来选）',
-        page.calls.some(c => c.method === 'POST' && String(c.url).includes('mode=pending')),
+  fin.files = [{ name: 'x.jpg', size: 1234 }];
+  await Promise.all(fin.dispatch('change'));
+  await sleep(20);
+  check('F3 选完照片先存进本机队列，不立刻上传',
+        !page.calls.some(c => c.method === 'POST' && String(c.url).includes('/upload')),
         JSON.stringify(page.calls.map(c => c.url)));
+  check('F3 本机队列里能看到这张', m.Q.length === 1, String(m.Q.length));
 
   // ---- F4：文件夹默认值来自地址栏（二维码里带过来的）----
   const withFolder = makePage(file, '/m/tok123', '?folder=3');
@@ -742,50 +790,66 @@ async function mobileChecks(file) {
         Array.isArray(patches[0].tags) && patches[0].tags.length === 0,
         JSON.stringify(patches[0]));
 
-  // ---- G14~G17：传送记录（用户 2026-10-06）----
-  // 要的：批量 / 拍照 / 混着来都进同一份、每条写名字，而且**再传一批不清空上一批**。
-  // 上一版每批开头 `list.innerHTML = ''` —— 传完 3 张再拍一张，前 3 条就没了。
+  // ---- G14~G19：离线队列 + 传送记录 ----
+  // 2026-10-22 起，手机选完照片先进本机 IndexedDB 队列，停手 30 秒或点
+  // 「现在全部传」才上传。G14 存的正是 F3 加进来的那张（名字为空）。
+  // 「传送记录」要写**服务端返回的最终名字**，而且再传一张不清空上一张。
   const fileInput = page.doc.getElementById('f');
-  const 传一张 = async (id, name) => {
-    page.state.reply = url => (String(url).includes('/upload')
-      ? { body: { staged: [{ id, name, tags: [] }] } } : null);
-    fileInput.files = [{ name: name + '.jpg' }];
-    await Promise.all(fileInput.dispatch('change'));
-  };
   const 记录行 = () => page.doc.getElementById('list').querySelectorAll('li');
 
-  // ⚠️ 前面 F3 那次上传也在记录里留了一条（那正是这功能在起作用：记录不清空）。
-  //    所以这里按**增量**断言，别写死总数。
-  const n0 = 记录行().length;
-
-  await 传一张(91, 'IMG_91');
+  page.state.reply = url => (String(url).includes('/upload')
+    ? { body: { ok: [{ id: 91, name: '20261022-3-B-5-1' }], failed: [],
+                staged: [], duplicate: false } }
+    : null);
+  await m.syncQueue(true);
   const r1 = 记录行();
-  check('G14 传完一条就多一条记录，写的是服务端起的名字',
-        r1.length === n0 + 1 && r1[n0].textContent.includes('IMG_91'),
+  check('G14 自动补传成功后，记录写的是最终入库的名字',
+        r1.length === 1 && r1[0].textContent.includes('20261022-3-B-5-1')
+        && r1[0].textContent.includes('已入库'),
         r1.map(r => r.textContent).join(' | '));
+  check('G14 成功后本机队列清空', m.Q.length === 0, String(m.Q.length));
 
-  await 传一张(92, 'IMG_92');
+  // 再拍一张：上一笔记录不能没（用户 2026-10-06 要的）
+  fileInput.files = [{ name: 'y.jpg', size: 2048 }];
+  await Promise.all(fileInput.dispatch('change'));
+  check('G15 第二张也先进本机队列', m.Q.length === 1, String(m.Q.length));
+  page.state.reply = url => (String(url).includes('/upload')
+    ? { body: { ok: [{ id: 92, name: '20261022-4-C-1-2' }], failed: [],
+                staged: [], duplicate: false } }
+    : null);
+  await m.syncQueue(true);
   const r2 = 记录行();
-  check('G15 再传一批不清空上一批（批量 + 拍照混着来都摞在同一份里）',
-        r2.length === n0 + 2 && r2[n0].textContent.includes('IMG_91')
-        && r2[n0 + 1].textContent.includes('IMG_92'),
+  check('G15 再传一张，上一笔记录还在（记录是「传过什么」，不是「还差什么」）',
+        r2.length === 2 && r2[0].textContent.includes('20261022-3-B-5-1')
+        && r2[1].textContent.includes('20261022-4-C-1-2'),
         r2.map(r => r.textContent).join(' | '));
 
   const 存了 = page.context.sessionStorage.getItem('jltx.sent');
   check('G16 记录存进了 sessionStorage（手机锁屏重载之后还在）',
-        !!存了 && JSON.parse(存了).length === n0 + 2, String(存了));
+        !!存了 && JSON.parse(存了).length === 2, String(存了));
 
-  // 名字跟着「待确认列表」走：下面填好「编号」+ 孔位，上面这条就变成那个名字
-  page.state.pending = {
-    items: [{ id: 92, name: 'JBScreen-G-3-1', original_filename: 'IMG_92.jpg',
-              size: 100, status: 'ok', reason: '', import_source: 'mobile',
-              conflict: null, folder_id: null, tags: ['G3-1'] }],
-    folders: [], total_size: 100, ok_count: 1, failed_count: 0,
-  };
-  await m.loadPend();
+  // G17：用户报的 bug —— 在待确认列表里改名，上面的传送记录要**立刻**跟着变。
+  // 这个页面还保留着电脑端多张上传留下的待确认行，那条路的名字同步没变。
+  m.setSent([{ pid: 7, name: 'IMG_7.jpg', st: '已传到电脑', cls: '', why: '' }]);
+  m.setP({ items: [{ id: 7, name: 'IMG_7', original_filename: 'IMG_7.jpg',
+                     size: 100, status: 'ok', reason: '', import_source: 'mobile',
+                     conflict: null, folder_id: null, tags: [] }],
+           folders: [], total_size: 100, ok_count: 1, failed_count: 0 });
+  page.state.reply = url => (String(url).endsWith('/imports/7')
+    ? { body: { id: 7, name: '晶体A-B-5-1', status: 'ok', reason: '',
+                conflict: null, tags: ['B5-1'] } }
+    : null);
+  const rowX = m.pendRow({ id: 7, name: 'IMG_7', original_filename: 'IMG_7.jpg',
+                           size: 100, status: 'ok', reason: '',
+                           import_source: 'mobile', conflict: null,
+                           folder_id: null, tags: [] });
+  const inpX = rowX.querySelector('input');
+  inpX.value = '晶体A';
+  inpX.dispatch('input');
+  await sleep(500);                       // 改名是 400ms 防抖
   const r3 = 记录行();
-  check('G17 下面起好名字，上面那条跟着变（不是一直挂着手机文件名）',
-        r3.length === n0 + 2 && r3[n0 + 1].textContent.includes('JBScreen-G-3-1'),
+  check('G17 改名成功后传送记录立刻更新（不用等整页重画）',
+        r3.length === 1 && r3[0].textContent.includes('晶体A-B-5-1'),
         r3.map(r => r.textContent).join(' | '));
 
   // G18：另一半 —— 重新打开页面（手机锁屏常常会这样）时，存着的记录要画回来。
@@ -805,14 +869,91 @@ async function mobileChecks(file) {
   // G19：「确认导入」之后记录**不消失**，只把状态改成「已导入」（用户指定的）。
   // 记录是"我传过什么"，不是"还差什么没确认"—— 后者是下面那张表的活。
   page.state.reply = url => (String(url).includes('/imports/confirm')
-    ? { body: { imported: 2 } } : null);
+    ? { body: { imported: 1 } } : null);
   page.state.pending = { items: [], folders: [], total_size: 0, ok_count: 0,
                          failed_count: 0 };
   await Promise.all(page.doc.getElementById('pok').dispatch('click'));
   const r4 = 记录行();
   check('G19 确认导入之后记录还在，状态改成「已导入」',
-        r4.length === n0 + 2 && r4[n0 + 1].textContent.includes('已导入'),
+        r4.length === 1 && r4[0].textContent.includes('已导入'),
         r4.map(r => r.textContent).join(' | '));
+
+  // ---- Q1~Q6：离线队列的上传 / 重试语义（2026-10-22）----
+  // Q1 已在 F3：选完不立刻传。
+  // Q2：填好编号 + 孔位后强制传，请求要带 name/tag/uid/mode=direct/folder。
+  m.setFolder(3);
+  fileInput.files = [{ name: 'q.jpg', size: 4096 }];
+  await Promise.all(fileInput.dispatch('change'));
+  const qRow = page.doc.getElementById('qrows').querySelectorAll('.qrow')[0];
+  const qno = qRow.querySelector('input.qno');
+  qno.value = '20261022-3';
+  qno.dispatch('input');
+  await sleep(450);                       // 编号框 400ms 防抖
+  const qsels = qRow.querySelector('.qbot').querySelectorAll('select.tg');
+  qsels[0].value = 'B';
+  await Promise.all(qsels[0].dispatch('change'));
+  qsels[1].value = '5';
+  await Promise.all(qsels[1].dispatch('change'));
+
+  // P22：缩略图点一下看大图（用的是本地 Blob 地址，断网也能看）
+  m.openPreview('blob:test');
+  const pv = page.doc.getElementById('pv');
+  check('P22 点缩略图能打开全屏大图',
+        pv.hidden === false && page.doc.getElementById('pvImg').src === 'blob:test',
+        `hidden=${pv.hidden} src=${page.doc.getElementById('pvImg').src}`);
+  pv.dispatch('click');
+  check('P22 点一下关闭大图', pv.hidden === true, `hidden=${pv.hidden}`);
+  const thumb0 = page.doc.getElementById('qrows').querySelectorAll('.qrow')[0]
+    .querySelector('img');
+  check('P22 队列缩略图挂了点击事件',
+        !!thumb0 && (thumb0._listeners.click || []).length > 0);
+
+  page.calls.length = 0;
+  page.state.reply = url => (String(url).includes('/upload')
+    ? { body: { ok: [{ id: 93, name: '20261022-3-B-5-1' }], failed: [],
+                staged: [], duplicate: false } }
+    : null);
+  await m.syncQueue(true);
+  const up = page.calls.find(c => String(c.url).includes('/upload'));
+  const part = k => {
+    const p = (up && up.body && up.body._parts || []).find(x => x[0] === k);
+    return p ? p[1] : undefined;
+  };
+  check('Q2 强制上传带上了 mode=direct / name / tag / uid / folder',
+        !!up && String(up.url).includes('mode=direct')
+        && String(up.url).includes('folder=3')
+        && part('name') === '20261022-3-B-5-1'
+        && part('tag') === 'B5-1'
+        && !!part('uid'),
+        JSON.stringify({ url: up && up.url, name: part('name'),
+                         tag: part('tag'), uid: part('uid') }));
+
+  // Q4：网络断了 —— 队列保留，状态写清楚
+  fileInput.files = [{ name: 'net.jpg', size: 10 }];
+  await Promise.all(fileInput.dispatch('change'));
+  page.state.reply = () => { throw new Error('offline'); };
+  await m.syncQueue(true);
+  check('Q4 传不上去时队列保留，状态写「等有网」',
+        m.Q.length === 1
+        && page.doc.getElementById('qrows').textContent.includes('等有网'),
+        page.doc.getElementById('qrows').textContent);
+
+  // Q5：电脑上的「手机传图」窗口关了
+  page.state.reply = () => ({ ok: false, status: 403, body: { detail: 'x' } });
+  await m.syncQueue(true);
+  const qtxt = page.doc.getElementById('qrows').textContent;
+  check('Q5 窗口关了要明说（不能只说「没传上去」）',
+        qtxt.includes('手机传图') && qtxt.includes('关了'), qtxt);
+  m.resetPause();
+
+  // Q6：服务端说这张已经入过库（duplicate）→ 本地也要删掉
+  page.state.reply = url => (String(url).includes('/upload')
+    ? { body: { ok: [{ id: 5, name: 'already.jpg' }], failed: [],
+                staged: [], duplicate: true } }
+    : null);
+  await m.syncQueue(true);
+  check('Q6 服务端说「已经入过库」时本地也删掉，不再重传',
+        m.Q.length === 0, String(m.Q.length));
 
   // G20：没传过东西时「传送记录」也**要露出来**。
   // 用户 2026-10-06 报过"重启了也没更新" —— 其实新页面已经在手机上，只是这一块
@@ -1207,26 +1348,26 @@ function labelChecks() {
   const f = ctx.photoLabel;
   if (typeof f !== 'function') throw new Error('photoLabel 跑起来不是函数');
 
-  // FOLDER_NAMES 只有叶子名（loadFolderNames 装的），所以 nameOf 就是它
-  const nameOf = id => ({ 2: '部分2' }[id] || '');
-  const label = (o) => f(o, nameOf);
+  // 2026-10-23 用户要求：下拉框只写照片名字（编号-排-列），不要文件夹前缀。
+  const label = (o) => f(o);
 
-  check('N1 有文件夹有标签 → 部分2-A1-1',
-        label({ name: 'A1-1', folders: [2], tags: ['A1-1'], line_count: 0 }) === '部分2-A1-1');
-  check('N2 只有文件夹 → 部分2-名字',
-        label({ name: 'IMG_1', folders: [2], tags: [], line_count: 0 }) === '部分2-IMG_1');
-  check('N3 只有标签 → A1-1',
-        label({ name: '随便', folders: [], tags: ['A1-1'], line_count: 0 }) === 'A1-1');
+  check('N1 有文件夹有标签 → 只写照片名字',
+        label({ name: 'A1-1', folders: [2], tags: ['A1-1'], line_count: 0 }) === 'A1-1');
+  check('N2 只有文件夹 → 还是只写名字',
+        label({ name: 'IMG_1', folders: [2], tags: [], line_count: 0 }) === 'IMG_1');
+  check('N3 只有标签 → 写名字，不是标签',
+        label({ name: '50-PEG-G-8-1', folders: [], tags: ['G8-1'], line_count: 0 })
+          === '50-PEG-G-8-1');
   check('N4 都没有 → 就是名字',
         label({ name: '随便', folders: [], tags: [], line_count: 0 }) === '随便');
   check('N5 量过的带尾巴',
         label({ name: 'A1-1', folders: [2], tags: ['A1-1'], line_count: 3 })
-          === '部分2-A1-1（已量 3 条）');
-  // 文件夹被删了 / FOLDER_NAMES 还没加载回来 —— 不能显示成 "undefined-名字"
-  check('N6 文件夹名字查不到 → 退回名字',
-        label({ name: 'IMG_1', folders: [99], tags: [], line_count: 0 }) === 'IMG_1');
-  check('N7 一张图在好几个文件夹里时只取第一个',
-        label({ name: 'x', folders: [2, 7], tags: [], line_count: 0 }) === '部分2-x');
+          === 'A1-1（已量 3 条）');
+  check('N6 编号-排-列 原样显示',
+        label({ name: '50-w3+w4-G-10-1', folders: [2], tags: ['G10-1'], line_count: 0 })
+          === '50-w3+w4-G-10-1');
+  check('N7 文件夹名字不出现在下拉里',
+        label({ name: 'x', folders: [2, 7], tags: [], line_count: 0 }) === 'x');
   check('N8 老数据没有 folders/tags 字段也不炸',
         label({ name: 'x', line_count: 0 }) === 'x');
 }

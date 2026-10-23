@@ -11,7 +11,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from app import db, storage
+from app import bgdetect, db, storage
 from app.api.images import _validate_name      # 同一份名字校验，别再写第二份
 from app.db import get_db
 
@@ -163,4 +163,7 @@ def set_image_folders(image_id: int, body: ImageFoldersIn,
     for fid in ids:
         _require_folder(conn, fid)
     db.set_image_folders(conn, image_id, ids)
+    if ids:
+        # 进了文件夹 = 用户肯定会看 —— 提前把起点圆算好（后台，不挡请求）。
+        bgdetect.enqueue([image_id])
     return {"image_id": image_id, "folders": ids}

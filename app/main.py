@@ -25,7 +25,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from app import config, db, detect, enhance, exporter, imageio, measure, settings, storage, thumbs
+from app import (bgdetect, config, db, enhance, exporter, imageio, measure,
+                 settings, storage, thumbs)
 from app.api import folders as folders_api
 from app.api import images as images_api
 from app.api import imports as imports_api
@@ -55,6 +56,11 @@ async def lifespan(_app: FastAPI):
     conn = db.get_conn()
     db.init_db(conn)
     conn.close()
+    # 后台预识别孔：只由 app.launch 设的开关触发。测试用 TestClient 不设，
+    # 所以测试里不会有后台线程偷偷跑。
+    if os.environ.get("JLTX_BG_DETECT") == "1":
+        bgdetect.start()
+        bgdetect.enqueue_existing()
     app.state.mobile_token = storage.mobile_token()
     app.state.mobile_on = False            # 局域网默认关着，用户在界面上开
     app.state.mobile_off_at = 0.0
@@ -131,21 +137,6 @@ def _resolve_sample(rel: str) -> Path:
 class PhotoIn(BaseModel):
     rel: str | None = None
     image_id: int | None = None
-
-
-def _rough_circle(path: Path, width: int, height: int) -> dict:
-    """粗定位一个起点圆。检不出就给个居中的默认圆 —— 保证界面上总有圆可拖。"""
-    try:
-        cands = detect.detect_wells(imageio.load_rgb(path))
-    except Exception:
-        cands = []
-    if cands:
-        r = float(cands[0].radius_px)
-        return {"cx": float(cands[0].center[0]), "cy": float(cands[0].center[1]),
-                "a": r, "b": r, "th": 0.0, "auto": True}
-    r = 0.25 * min(width, height)
-    return {"cx": width / 2.0, "cy": height / 2.0, "a": r, "b": r, "th": 0.0,
-            "auto": True}
 
 
 def _circle_json(c: dict) -> str:
@@ -228,7 +219,8 @@ def open_photo(body: PhotoIn, conn=Depends(get_db)) -> dict:
     if state["circle"] is None:
         # 初次打开：自动放一个起点圆并直接标定。
         # 用户一拖就覆盖它，之前的测量值会自动重算 —— 所以起点粗糙没关系。
-        c = _rough_circle(p, state["width"], state["height"])
+        # 有后台预识别缓存就秒开；没有就现场算（约 5 秒）并写回缓存。
+        c = bgdetect.cached_or_detect(conn, row, p, state["width"], state["height"])
         state["um_per_px"] = _save_circle(conn, row["id"], c)
         state["circle"] = c
         state["lines"] = measure.list_lines(conn, row["id"])

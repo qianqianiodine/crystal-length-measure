@@ -26,7 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from app import db, storage, thumbs
+from app import bgdetect, db, storage, thumbs
 from app.api.images import (_TAG_RE, _name_and_tags, _name_from_file,
                             _pending_summary, _reason, _unique_name,
                             _validate_name)
@@ -297,6 +297,7 @@ def confirm_pending(request: Request, body: ConfirmIn,
                 fid = row["folder_id"]
                 if fid is not None and db.get_folder(conn, fid) is not None:
                     db.set_image_folders(conn, new_id, [fid])
+                    bgdetect.enqueue([new_id])
             except Exception as e:                      # noqa: BLE001
                 # 删旧的和建新的之间没有事务可依：create_image 炸了的话旧的可能已经没了。
                 # 但异常绝不能冲出循环 —— 那会让客户端 500、剩下的行不再处理。
