@@ -1,0 +1,931 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>晶体长度测量工具 · 使用说明</title>
+<style>
+/* 打印用。A4，上 15 下 13 左右 14 —— 留够装订和手持的边。 */
+@page { size: A4; margin: 15mm 14mm 13mm; }
+
+:root {
+  /* 纸张版配色：把工具那套暖石墨暗色**翻到纸面上**。
+     强调色还是工具里那一个琥珀色（#e0a63c），压暗到纸上能看清的 #a9741a。 */
+  --paper: #fbf8f3;
+  --text:  #1c1a15;
+  --mute:  #6d6558;
+  --faint: #8c8478;
+  --rule:  #ded6c6;
+  --rule2: #efe8db;
+  --ref:   #a9741a;          /* 强调色：小标题的竖条、编号、要点 */
+  --refbg: #f7eeda;
+  --refrule:#e2c98d;
+  --warn:  #a8442c;          /* 只在「这一步会丢东西」时出现 */
+  --warnbg:#fbeee9;
+  --warnrule:#e8c3b6;
+  --ui:  "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+  --num: Consolas, "Cascadia Mono", ui-monospace, monospace;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+body {
+  margin: 0; background: var(--paper); color: var(--text);
+  font: 10.5pt/1.8 var(--ui);
+  font-variant-numeric: tabular-nums;
+}
+.page { max-width: 186mm; margin: 0 auto; padding: 8mm 0 0; }
+
+/* ---------- 封面块：不单独占一页，接着就是「一分钟上手」 ---------- */
+.cover { border-bottom: 2px solid var(--text); padding-bottom: 7mm; margin-bottom: 8mm; }
+.cover .kicker {
+  font: 10pt/1 var(--num); letter-spacing: .18em; color: var(--ref);
+  text-transform: uppercase; margin: 0 0 4mm;
+}
+.cover h1 {
+  font-size: 27pt; line-height: 1.22; letter-spacing: -.01em;
+  margin: 0 0 4mm; font-weight: 700;
+}
+.cover .sub { font-size: 12pt; line-height: 1.7; color: var(--mute); margin: 0; max-width: 62ch; }
+.cover .meta {
+  margin: 6mm 0 0; font: 9pt/1.6 var(--num); color: var(--faint);
+  display: flex; gap: 7mm; flex-wrap: wrap;
+}
+
+/* ---------- 标题层级 ---------- */
+h2 {
+  font-size: 15pt; line-height: 1.4; margin: 11mm 0 3.5mm; padding-left: 4.2mm;
+  border-left: 3.5px solid var(--ref); break-after: avoid;
+}
+h2 .n { font: 11pt/1 var(--num); color: var(--ref); margin-right: 2.6mm; }
+h3 { font-size: 11.5pt; margin: 6mm 0 2mm; break-after: avoid; }
+h4 { font-size: 10.5pt; margin: 4.5mm 0 1.5mm; color: var(--mute); break-after: avoid; }
+p { margin: 0 0 2.8mm; }
+ul, ol { margin: 0 0 3mm; padding-left: 5.5mm; }
+li { margin: 0 0 1.4mm; }
+li::marker { color: var(--faint); }
+b, strong { font-weight: 600; }
+code, kbd { font-family: var(--num); font-size: .93em; }
+code { background: var(--rule2); padding: .5mm 1.2mm; border-radius: 2px; }
+
+/* 键帽 */
+kbd {
+  display: inline-block; min-width: 5mm; text-align: center;
+  padding: .6mm 1.8mm; border: 1px solid var(--rule);
+  border-bottom-width: 2px; border-radius: 3px;
+  background: #fff; color: var(--text); font-size: 9pt; line-height: 1.5;
+}
+
+/* ---------- 步骤（这里的编号是真序列，不是装饰）---------- */
+.step { display: flex; gap: 4mm; margin: 0 0 4mm; break-inside: avoid; }
+.step > .num {
+  flex: 0 0 7mm; height: 7mm; border-radius: 50%;
+  background: var(--ref); color: #fff;
+  font: 600 10pt/7mm var(--num); text-align: center;
+}
+.step > .body { flex: 1 1 auto; min-width: 0; }
+.step > .body > :last-child { margin-bottom: 0; }
+
+/* ---------- 提示框 ---------- */
+.note {
+  background: var(--refbg); border: 1px solid var(--refrule); border-radius: 3px;
+  padding: 3mm 4mm; margin: 3.5mm 0; break-inside: avoid;
+}
+.note.warn { background: var(--warnbg); border-color: var(--warnrule); }
+.note p:last-child { margin-bottom: 0; }
+.note .tag {
+  font-weight: 600; color: var(--ref); margin-right: 1.5mm;
+}
+.note.warn .tag { color: var(--warn); }
+
+/* ---------- 示意图 ---------- */
+figure { margin: 4mm 0 5mm; break-inside: avoid; }
+figure svg { display: block; width: 100%; height: auto; }
+figcaption {
+  margin-top: 2.2mm; font-size: 9pt; line-height: 1.65; color: var(--mute);
+}
+figcaption b { color: var(--text); }
+
+/* ---------- 控制点图例（和侧栏里那四条一字不差）---------- */
+.legend { list-style: none; padding: 0; margin: 3.5mm 0 0; }
+.legend li {
+  display: flex; gap: 3mm; align-items: baseline;
+  padding: 1.6mm 0; border-bottom: 1px solid var(--rule2);
+}
+.legend li:last-child { border-bottom: 0; }
+.legend .badge {
+  flex: 0 0 5.5mm; height: 5.5mm; border-radius: 50%;
+  background: var(--ref); color: #fff;
+  font: 600 9pt/5.5mm var(--num); text-align: center;
+}
+
+/* ---------- 速查表 ---------- */
+table { width: 100%; border-collapse: collapse; margin: 3mm 0 4mm; break-inside: avoid; }
+th, td { text-align: left; padding: 1.9mm 2.6mm; border-bottom: 1px solid var(--rule2); vertical-align: top; }
+th { font-size: 9.5pt; color: var(--mute); font-weight: 600; border-bottom: 1px solid var(--rule); }
+td:first-child { width: 38%; white-space: nowrap; }
+tbody tr:last-child td { border-bottom: 0; }
+
+/* ---------- 两栏（用在速查表太长的两处）---------- */
+.cols2 { display: flex; gap: 8mm; }
+.cols2 > * { flex: 1 1 0; min-width: 0; }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header class="cover">
+  <p class="kicker">使用说明</p>
+  <h1>晶体长度测量工具</h1>
+  <p class="sub">
+    给坐滴板单孔照片量晶体长度。拍一张照片 → 让工具认住那个点样孔（3.4&nbsp;mm）→
+    在晶体两头拖一条线，长度就出来了。
+  </p>
+  <p class="meta">
+    <span>2026-09-24</span>
+    <span>Windows 10</span>
+    <span>本说明对应压缩包里的这个版本</span>
+  </p>
+</header>
+
+<h2><span class="n">01</span>先打开它</h2>
+
+<div class="step"><div class="num">1</div><div class="body">
+  <p>双击文件夹里的 <code>启动.bat</code>。</p>
+</div></div>
+
+<div class="step"><div class="num">2</div><div class="body">
+  <p>会跳出一个 <b>黑色小窗口</b>。让它开着 —— <b>关掉它，工具就停了</b>。</p>
+  <p>窗口里写着一条网址（一般是 <code>http://127.0.0.1:8510</code>）。浏览器会自己打开这个页面；
+  要是没打开，把那条网址手敲进浏览器地址栏就行。</p>
+</div></div>
+
+<div class="step"><div class="num">3</div><div class="body">
+  <p>第一次启动时 Windows 可能弹防火墙提示 —— <b>只勾「专用网络」</b>，别勾「公用网络」。</p>
+  <p>这一步只影响手机传图。漏掉了也不影响别的功能，以后想补：手机传图连不上时再来处理。</p>
+</div></div>
+
+<div class="note">
+  <p><span class="tag">关不掉？</span>
+  直接关那个黑窗口就行，不需要别的操作。下次用还是双击 <code>启动.bat</code>。</p>
+</div>
+
+<h2><span class="n">02</span>界面认路</h2>
+
+<p>整个工具就两个页面：<b>测量页</b>（量长度的地方，就是刚打开的这个）和<b>图库页</b>（管理照片的地方，点左上角「图库」进去）。</p>
+
+<figure>
+<svg viewBox="0 0 900 380" role="img" aria-label="测量页界面示意图：顶栏、画布、侧栏三块">
+  <!-- 整张界面图统一右移 60，给左右两边留出写引注的地方 -->
+  <g transform="translate(60,0)">
+  <!-- 窗口 -->
+  <rect x="90" y="40" width="630" height="300" rx="8" fill="#17150f"/>
+  <!-- 顶栏 -->
+  <rect x="90" y="40" width="630" height="44" rx="8" fill="#2a261d"/>
+  <rect x="90" y="72" width="630" height="12" fill="#2a261d"/>
+  <line x1="90" y1="84" x2="720" y2="84" stroke="#37322a"/>
+  <rect x="102" y="53" width="52" height="19" rx="3" fill="none" stroke="#4a4436"/>
+  <text x="128" y="66" class="d" font-size="10" text-anchor="middle">图库</text>
+  <rect x="164" y="53" width="132" height="19" rx="3" fill="#1f1c16" stroke="#4a4436"/>
+  <text x="174" y="66" class="d" font-size="10">样品2_1</text>
+  <path d="M286 60 l4 5 l4 -5" fill="none" stroke="#9a9284" stroke-width="1.5"/>
+  <rect x="306" y="53" width="46" height="19" rx="3" fill="#e0a63c"/>
+  <text x="329" y="66" font-size="10" text-anchor="middle" fill="#17150f" font-family="Microsoft YaHei UI,sans-serif" font-weight="600">打开</text>
+  <text x="366" y="66" class="d" font-size="10" opacity=".78">先选一张照片</text>
+
+  <!-- 画布 -->
+  <rect x="90" y="84" width="480" height="256" fill="#0e0d0a"/>
+  <!-- 照片 -->
+  <rect x="132" y="106" width="396" height="212" fill="#2b2620"/>
+  <text x="330" y="300" class="d" font-size="10" text-anchor="middle" opacity=".5">照片显示在这里</text>
+  <!-- 标定圆 + 控制点（和「图二」同一套画法） -->
+  <g transform="translate(330,205)">
+    <ellipse rx="86" ry="54" transform="rotate(-18)" fill="none" stroke="#fff" stroke-width="2.5"/>
+    <line x1="-81.8" y1="26.6" x2="81.8" y2="-26.6" stroke="#e0a63c" stroke-width="1.2" stroke-dasharray="4 4"/>
+    <line x1="-16.7" y1="-51.3" x2="16.7" y2="51.3" stroke="#9a9284" stroke-width="1.2" stroke-dasharray="4 4"/>
+    <circle cx="0" cy="0" r="3" fill="#fff"/>
+    <circle cx="81.8" cy="-26.6" r="7" fill="#fff"/><circle cx="-81.8" cy="26.6" r="7" fill="#fff"/>
+    <circle cx="16.7" cy="51.3" r="5.5" fill="#fff"/><circle cx="-16.7" cy="-51.3" r="5.5" fill="#fff"/>
+    <circle cx="24.1" cy="74.1" r="6" fill="#17150f" stroke="#fff" stroke-width="2.2"/>
+  </g>
+  <!-- 测量线 -->
+  <line x1="196" y1="152" x2="300" y2="140" stroke="#e0a63c" stroke-width="2"/>
+  <circle cx="196" cy="152" r="4" fill="#e0a63c" stroke="#0b0a08" stroke-width="1.5"/>
+  <circle cx="300" cy="140" r="4" fill="#e0a63c" stroke="#0b0a08" stroke-width="1.5"/>
+  <text x="248" y="132" font-size="10" text-anchor="middle" fill="#e0a63c"
+        font-family="Consolas,monospace" stroke="#0b0a08" stroke-width="2.5" paint-order="stroke">128.4 μm</text>
+
+  <!-- 侧栏 -->
+  <rect x="570" y="84" width="150" height="256" fill="#1f1c16"/>
+  <line x1="570" y1="84" x2="570" y2="340" stroke="#37322a"/>
+  <g class="d" font-size="9.5" text-anchor="middle">
+    <rect x="580" y="94"  width="130" height="27" rx="3" fill="#2a261d"/><text x="645" y="112">比例尺</text>
+    <rect x="580" y="127" width="130" height="27" rx="3" fill="#2a261d"/><text x="645" y="145">点样孔直径</text>
+    <rect x="580" y="160" width="130" height="27" rx="3" fill="#2a261d"/><text x="645" y="178">定圆</text>
+    <rect x="580" y="193" width="130" height="27" rx="3" fill="#2a261d"/><text x="645" y="211">画质调整</text>
+    <rect x="580" y="226" width="130" height="27" rx="3" fill="#2a261d"/><text x="645" y="244">测量记录</text>
+    <rect x="580" y="259" width="130" height="27" rx="3" fill="#2a261d"/><text x="645" y="277">导出</text>
+    <rect x="580" y="292" width="130" height="27" rx="3" fill="#2a261d"/><text x="645" y="310">这张照片</text>
+  </g>
+  </g>
+
+  <!-- 引注 -->
+  <g stroke="#a9741a" stroke-width="1.2">
+    <line x1="118" y1="62" x2="148" y2="62"/>
+    <line x1="118" y1="212" x2="148" y2="212"/>
+  </g>
+  <g fill="#a9741a" font-size="11" font-weight="600" font-family="Microsoft YaHei UI,sans-serif">
+    <text x="112" y="66" text-anchor="end">顶栏</text>
+    <text x="112" y="216" text-anchor="end">画布</text>
+    <text x="790" y="216">侧栏</text>
+  </g>
+  <g fill="#8c8478" font-size="9.5" font-family="Microsoft YaHei UI,sans-serif">
+    <text x="112" y="80" text-anchor="end">选照片 · 进图库</text>
+    <text x="112" y="230" text-anchor="end">照片和标注都在这</text>
+    <text x="790" y="230">所有按钮都在这一列</text>
+  </g>
+</svg>
+<figcaption>
+  <b>三块地方。</b>上面的<b>顶栏</b>负责选照片；中间的<b>画布</b>是你干活的地方；
+  右边那一列<b>侧栏</b>是全部按钮，从上到下的顺序就是干活的顺序 ——
+  先看比例尺，再定圆，然后量，最后导出。
+</figcaption>
+</figure>
+
+<p><b>顶栏的下拉框里是照片自己的名字</b>（比如 <code>50-PEG-G-8-1</code>），不是文件夹名；
+量过的照片后面会写「（已量 N 条）」。</p>
+
+<h2><span class="n">03</span>把照片弄进来</h2>
+
+<p>四种办法，挑顺手的用：</p>
+
+<div class="cols2">
+<div>
+<h4>在测量页</h4>
+<ul>
+  <li><b>拖进来</b> —— 把照片文件从文件夹拖到画布上，松手就导入。</li>
+  <li><b>粘进来</b> —— 按 <kbd>Ctrl</kbd>+<kbd>V</kbd>（截图、微信里的图都能这么贴）。</li>
+</ul>
+</div>
+<div>
+<h4>在图库页</h4>
+<ul>
+  <li>点<b>「导入照片」</b>挑文件，或直接拖到页面上、按 <kbd>Ctrl</kbd>+<kbd>V</kbd>。</li>
+  <li><b>手机传图</b> —— 见第 13 节。</li>
+</ul>
+</div>
+</div>
+
+<p>支持的格式：JPG、PNG、TIF、BMP。一次拖好几张也行。</p>
+
+<h3>导入之后先「认名字」</h3>
+
+<p><b>电脑上</b>导入的照片不会直接进图库，而是先停在一个<b>待确认导入</b>的列表里 —— 这是故意的，让你趁这个时候把名字改好：</p>
+
+<ol>
+  <li>每行左边写着工具起的名字（默认用原文件名）。点进输入框就能改。</li>
+  <li>名字和其他照片撞了，那一行会变红并给出三个选择：<b>自动加后缀</b> / <b>手动改</b> / <b>覆盖原图像</b>。
+      <b>「覆盖原图像」会永久删掉图库里那张同名的照片和它上面的测量记录</b>，拿不准就别选它。</li>
+  <li>顶部「这批放到」可以给这批照片选一个文件夹（也可以选「不放进文件夹」）。</li>
+  <li>满意了点<b>「确认导入」</b>。点「取消」的话，这批照片要重新传一遍。</li>
+</ol>
+
+<div class="note">
+  <p><span class="tag">手机传图不一样。</span>
+  在手机上填好名字、孔位再传的，传完就<b>直接进图库</b>，不用再到这个列表里确认（见第 13 节）。</p>
+</div>
+
+<div class="note">
+  <p><span class="tag">照片会被复制一份。</span>
+  导入之后照片归工具管，放在 <code>data\</code> 文件夹里。原来那个文件还在原地，不动它。</p>
+</div>
+
+<h3>加进文件夹以后，工具会在后台先准备起点圆</h3>
+<p>把照片放进文件夹（导入时选文件夹，或者以后在图库里用「归档…」），工具会在后台
+<b>提前算好打开这张图时自动放的圆</b>。之后打开文件夹里的照片会快很多。</p>
+<ul>
+  <li>后台是一张一张算的；刚放进去就马上打开，可能还没算完，等几秒再开就顺了。</li>
+  <li>这个圆只是<b>起点</b>：准不准都要你自己拖一下核对（第 04 节）。</li>
+</ul>
+
+<h2><span class="n">04</span>定圆：告诉工具 3.4&nbsp;mm 有多长</h2>
+
+<p>这是唯一一步「必须做对」的事。照片上没有尺子，工具要靠圆来推算出比例 ——
+你圈出来的这个圆，就是点样孔的 <b>3.4&nbsp;mm</b>；有了它，后面每条线的像素数才能换算成微米。</p>
+
+<div class="note">
+  <p><span class="tag">先确认侧栏「点样孔直径」里的数。</span>
+  默认是 3.4。板子不一样就改成你自己的数。<b>这个数填错，量出来的每个长度都会跟着错。</b></p>
+</div>
+
+<p>打开照片时，工具会先自己猜一个圆。你要做的是把它拖准 —— 拖动下面这几个点：</p>
+
+<div class="note">
+  <p><span class="tag">自动放的圆只是起点。</span>
+  工具现在用视觉模型来猜圆，一般几十毫秒就出来；孔拍得完整时也会尽量套在孔上。
+  但它不一定每次都准 —— <b>不管看起来多准，都请自己拖一下确认</b>。
+  如果圆跑到液滴或旁边的孔上，直接拖到孔上就行。</p>
+</div>
+
+<figure>
+<svg viewBox="0 0 560 380" role="img" aria-label="定圆的四个控制点示意图">
+  <rect x="30" y="24" width="500" height="330" rx="4" fill="#241f18"/>
+  <g transform="translate(280,178)">
+    <!-- 圆 -->
+    <ellipse rx="140" ry="88" transform="rotate(-18)" fill="none" stroke="#fff" stroke-width="2.6"/>
+    <!-- 长轴 / 短轴（长轴是琥珀色，短轴是灰的 —— 一眼分得清哪根是"说了算"的那根） -->
+    <line x1="-133.1" y1="43.3" x2="133.1" y2="-43.3" stroke="#e0a63c" stroke-width="1.4" stroke-dasharray="5 5"/>
+    <line x1="-27.2" y1="-83.7" x2="27.2" y2="83.7" stroke="#9a9284" stroke-width="1.4" stroke-dasharray="5 5"/>
+    <text x="78" y="-58" fill="#e0a63c" font-size="12" font-family="Microsoft YaHei UI,sans-serif">长轴</text>
+    <text x="-96" y="30" fill="#9a9284" font-size="12" font-family="Microsoft YaHei UI,sans-serif">短轴</text>
+    <!-- 控制点 -->
+    <circle cx="0" cy="0" r="3.5" fill="#fff"/>
+    <circle cx="133.1" cy="-43.3" r="7.5" fill="#fff"/><circle cx="-133.1" cy="43.3" r="7.5" fill="#fff"/>
+    <circle cx="27.2" cy="83.7" r="5.5" fill="#fff"/><circle cx="-27.2" cy="-83.7" r="5.5" fill="#fff"/>
+    <circle cx="40.8" cy="125.5" r="6.5" fill="#17150f" stroke="#fff" stroke-width="2.4"/>
+  </g>
+  <!-- ① 十字（引线从徽章边缘拉到十字跟前，别悬空） -->
+  <line x1="229" y1="118" x2="274" y2="170" stroke="#a9741a" stroke-width="1.1"/>
+  <!-- ② 大点 -->
+  <line x1="428" y1="122" x2="462" y2="96" stroke="#a9741a" stroke-width="1.1"/>
+  <!-- ③ 小点 -->
+  <line x1="288" y1="272" x2="258" y2="300" stroke="#a9741a" stroke-width="1.1"/>
+  <!-- ④ 空心点 -->
+  <line x1="336" y1="312" x2="372" y2="336" stroke="#a9741a" stroke-width="1.1"/>
+  <g font-family="Consolas,monospace" font-size="12" font-weight="700" text-anchor="middle">
+    <circle cx="222" cy="110" r="11" fill="#a9741a"/><text x="222" y="114.5" fill="#fff">1</text>
+    <circle cx="472" cy="86" r="11" fill="#a9741a"/><text x="472" y="90.5" fill="#fff">2</text>
+    <circle cx="248" cy="310" r="11" fill="#a9741a"/><text x="248" y="314.5" fill="#fff">3</text>
+    <circle cx="382" cy="346" r="11" fill="#a9741a"/><text x="382" y="350.5" fill="#fff">4</text>
+  </g>
+</svg>
+<figcaption>
+  侧栏「定圆」那一栏下面也写着这四条，字是一模一样的。
+  <ul class="legend">
+    <li><span class="badge">1</span><span><b>十字：整体移动</b> —— 圆没套住孔，就拖十字把它搬到孔上。</span></li>
+    <li><span class="badge">2</span><span><b>大点：改长轴</b> —— 把圆拉大拉小。长轴是琥珀色那根，<b>只有它说了算</b>。</span></li>
+    <li><span class="badge">3</span><span><b>小点：改短轴</b> —— 孔拍斜了（看着是椭圆）的时候用。只拖一个点，圆就变成椭圆了。</span></li>
+    <li><span class="badge">4</span><span><b>空心点：旋转</b> —— 椭圆的方向不对，拖它转。</span></li>
+  </ul>
+</figcaption>
+</figure>
+
+<h3>三个要点</h3>
+
+<ul>
+  <li><b>孔拍成正圆，就让它保持正圆</b> —— 长短轴相等的时候，怎么转都不影响结果。</li>
+  <li><b>孔拍成了椭圆，就拉成椭圆</b>，而且要<b>让长轴对准孔真正的直径方向</b>。
+      比例尺只认长轴：长轴比真实直径短一点，量出来的数就全都偏小一点。</li>
+  <li><b>拖到大致准就够。</b>这个工具的目标是「算出大概多长」，不是像素级的精测。
+      圆和孔边缘差一两个像素，对结果没有看得出的影响。</li>
+</ul>
+
+<div class="note">
+  <p><span class="tag">为什么是长轴？</span>
+  孔是圆的，拍斜了成像就是椭圆 —— 拍照这一下把某一个方向压短了，另一个方向没动。
+  没被压短的那个方向就是长轴，它还是真实的直径。</p>
+</div>
+
+<h2><span class="n">05</span>量长度</h2>
+
+<figure>
+<svg viewBox="0 0 560 300" role="img" aria-label="拖线量长度示意图">
+  <rect x="20" y="20" width="520" height="260" rx="4" fill="#241f18"/>
+  <!-- 晶体 -->
+  <path d="M280 75 c50 0 95 20 115 55 c18 32 8 72 -25 92 c-34 21 -85 24 -125 8
+           c-42 -17 -68 -50 -62 -85 c6 -34 47 -70 97 -70 Z" fill="#c9c2b2"/>
+  <!-- 线：两头正好落在晶体的边上（量长度本来就是从一头量到另一头） -->
+  <line x1="172" y1="155" x2="390" y2="138" stroke="#e0a63c" stroke-width="2.4"/>
+  <circle cx="172" cy="155" r="4.5" fill="#e0a63c" stroke="#0b0a08" stroke-width="2"/>
+  <circle cx="390" cy="138" r="4.5" fill="#e0a63c" stroke="#0b0a08" stroke-width="2"/>
+  <text x="281" y="118" font-size="15" text-anchor="middle" fill="#fff"
+        font-family="Consolas,monospace" font-weight="600"
+        stroke="#0b0a08" stroke-width="3.5" paint-order="stroke">128.4 μm</text>
+  <!-- 两头的提示就贴在各自的端点旁边，不另画箭头 -->
+  <text x="160" y="160" font-size="11.5" text-anchor="end" fill="#e0a63c"
+        font-family="Microsoft YaHei UI,sans-serif">在这按住</text>
+  <text x="402" y="143" font-size="11.5" text-anchor="start" fill="#e0a63c"
+        font-family="Microsoft YaHei UI,sans-serif">拖到这松手</text>
+</svg>
+<figcaption>
+  <b>在空白处按住左键，拖出这条线，松手就记下。</b>长度自动算出来贴在线上。
+  记完了还想再量一条，就再拖一条 —— 想量几条量几条。
+</figcaption>
+</figure>
+
+<div class="note">
+  <p><span class="tag">注意起点。</span>
+  从<b>空白处</b>开始拖才是画线。要是按在圆点、十字或者测量线上，那就是在拖那个东西、或者在挪照片 ——
+  不是画线。按错了松开重拖就行，不会弄坏什么。</p>
+</div>
+
+<h2><span class="n">06</span>放大、缩小、挪照片</h2>
+
+<table>
+  <thead><tr><th>想干什么</th><th>怎么做</th></tr></thead>
+  <tbody>
+    <tr><td>放大 / 缩小</td><td>滚轮前后滚。<b>以鼠标指的地方为中心</b>放大，所以先把鼠标挪到晶体上再滚。</td></tr>
+    <tr><td>挪照片</td><td>按住<b>鼠标中键</b>（滚轮按下去）或者<b>右键</b>，拖着走。</td></tr>
+    <tr><td>回到最初的样子</td><td><b>双击</b>画布任意位置。</td></tr>
+  </tbody>
+</table>
+
+<div class="note warn">
+  <p><span class="tag">拖到找不着了？</span>
+  双击一下就能复位。照片不会丢，圆和测量线也都在，只是视图回到了起点。</p>
+</div>
+
+<h2><span class="n">07</span>测量记录：改备注、删一条、反悔</h2>
+
+<p>侧栏「测量记录」下面列着这张照片上的每一条线：<b>颜色</b>（和图上那条对应）、<b>长度</b>、<b>备注框</b>、<b>✕</b>。</p>
+
+<ul>
+  <li><b>写备注</b>：点备注框打字，点一下别的地方就自动存好了。比如写「左边那颗」。</li>
+  <li><b>删一条</b>：点那行的 <b>✕</b>。</li>
+  <li><b>撤销</b>：<kbd>Ctrl</kbd>+<kbd>Z</kbd>。侧栏「撤销」按钮上也写着你下一步会撤销掉什么（比如「撤销：清空 3 条」），照着看一眼再点更稳。</li>
+  <li><b>重做</b>：<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd>。撤销撤多了就用它。</li>
+  <li><b>清空</b>：一次删掉这张照片的全部记录。</li>
+  <li><b>关掉这张</b>：把照片从屏幕上拿开，回到空白页。<b>照片和测量记录都还在</b>，顶栏下拉框里能选回来。</li>
+</ul>
+
+<p>能撤销的操作包括：画线、删线、改备注、挪标签、清空。撤销链会一直留着，刷新页面也不会丢。</p>
+
+<h2><span class="n">08</span>图上那些字和线长什么样</h2>
+
+<p>侧栏「导出」栏里有<b>两个滑块</b>，管的就是画在照片上的那些东西：</p>
+
+<table>
+  <thead><tr><th>滑块</th><th>管什么</th></tr></thead>
+  <tbody>
+    <tr><td><b>字号</b>（10–34）</td>
+        <td>长度数字和标尺上的字。<b>两处是同一个字号</b>，调一次两边一起变。</td></tr>
+    <tr><td><b>线宽</b>（1–8）</td>
+        <td>测量线有多粗，两端的圆点也跟着同比例变大小。默认 2；嫌粗还能再往下调到 1。</td></tr>
+  </tbody>
+</table>
+
+<p>拖滑块的时候画面立刻跟着变，合适了就松手 —— 这两个值会记住，下次打开还是它，换照片也不变。</p>
+
+<div class="note">
+  <p><span class="tag">字和线是「照片的一部分」。</span>
+  它们跟着照片一起缩放：你放大看晶体时，字和线在屏幕上跟着变大；缩小看全图时，它们跟着变小。
+  也就是说 —— <b>字和线相对照片的大小始终是固定的</b>。</p>
+  <p>这么设计是为了导出的图和你屏幕上看到的完全一样：你在这里调成什么样，导出就是什么样，
+  不会出现「屏幕上看着正好、导出之后字变小了」这种事。</p>
+</div>
+
+<h2><span class="n">09</span>标注挡住晶体了？拖开它</h2>
+
+<p>长度数字默认贴在线段上方，标尺默认在角落。挡着东西的时候可以挪：</p>
+
+<figure>
+<svg viewBox="0 0 660 300" role="img" aria-label="按住 Ctrl 用左键拖动长度数字和标尺的示意图">
+  <!-- 左：挪长度数字 -->
+  <rect x="10" y="16" width="300" height="238" rx="4" fill="#241f18"/>
+  <line x1="50" y1="120" x2="260" y2="100" stroke="#e0a63c" stroke-width="2.2"/>
+  <circle cx="50" cy="120" r="4" fill="#e0a63c" stroke="#0b0a08" stroke-width="1.6"/>
+  <circle cx="260" cy="100" r="4" fill="#e0a63c" stroke="#0b0a08" stroke-width="1.6"/>
+  <text x="155" y="72" font-size="13" text-anchor="middle" fill="#e0a63c" font-family="Consolas,monospace"
+        stroke="#0b0a08" stroke-width="3" paint-order="stroke">128.4 μm</text>
+  <text x="155" y="196" font-size="13" text-anchor="middle" fill="#e0a63c" opacity=".42" font-family="Consolas,monospace"
+        stroke="#0b0a08" stroke-width="3" paint-order="stroke">128.4 μm</text>
+  <path d="M155 86 L155 178" stroke="#a9741a" stroke-width="1.3" stroke-dasharray="4 4" marker-end="url(#ar2)"/>
+  <rect x="24" y="24" width="86" height="22" rx="3" fill="#e0a63c"/>
+  <text x="67" y="39" font-size="11.5" text-anchor="middle" fill="#17150f"
+        font-family="Microsoft YaHei UI,sans-serif" font-weight="600">Ctrl + 左键</text>
+
+  <!-- 右：挪标尺。上面实的是原来的位置，下面淡的是拖过去之后 —— 顺序和左边一致 -->
+  <rect x="350" y="16" width="300" height="238" rx="4" fill="#241f18"/>
+  <line x1="400" y1="76" x2="600" y2="76" stroke="#17150f" stroke-width="6"/>
+  <line x1="400" y1="76" x2="600" y2="76" stroke="#fff" stroke-width="2.5"/>
+  <path d="M400 62 L400 90 M500 62 L500 90 M600 62 L600 90" stroke="#17150f" stroke-width="6"/>
+  <path d="M400 62 L400 90 M500 62 L500 90 M600 62 L600 90" stroke="#fff" stroke-width="4"/>
+  <text x="500" y="52" font-size="12" text-anchor="middle" fill="#fff" font-family="Consolas,monospace"
+        stroke="#0b0a08" stroke-width="3" paint-order="stroke">500 μm</text>
+  <g opacity=".42">
+    <line x1="400" y1="196" x2="600" y2="196" stroke="#17150f" stroke-width="6"/>
+    <line x1="400" y1="196" x2="600" y2="196" stroke="#fff" stroke-width="2.5"/>
+    <path d="M400 182 L400 210 M500 182 L500 210 M600 182 L600 210" stroke="#17150f" stroke-width="6"/>
+    <path d="M400 182 L400 210 M500 182 L500 210 M600 182 L600 210" stroke="#fff" stroke-width="4"/>
+    <text x="500" y="174" font-size="12" text-anchor="middle" fill="#fff" font-family="Consolas,monospace"
+          stroke="#0b0a08" stroke-width="3" paint-order="stroke">500 μm</text>
+  </g>
+  <path d="M622 96 L622 166" stroke="#a9741a" stroke-width="1.3" stroke-dasharray="4 4"
+        fill="none" marker-end="url(#ar2)"/>
+  <rect x="364" y="24" width="86" height="22" rx="3" fill="#e0a63c"/>
+  <text x="407" y="39" font-size="11.5" text-anchor="middle" fill="#17150f"
+        font-family="Microsoft YaHei UI,sans-serif" font-weight="600">Ctrl + 左键</text>
+  <defs>
+    <marker id="ar2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#a9741a"/>
+    </marker>
+  </defs>
+</svg>
+<figcaption>
+  <b>按住 <kbd>Ctrl</kbd> 别松，再用左键拖</b> —— 左边是把长度数字拖到别处，右边是把标尺拖到别处。
+  淡色的那个是拖过去之后的样子。
+</figcaption>
+</figure>
+
+<p>松开 <kbd>Ctrl</kbd> 之后，这两个东西就不能拖了，左键回到「画测量线」的本职。
+这么设计是为了防止误碰 —— 量到一半手一滑把数字拖跑了。</p>
+
+<p>位置会记住，刷新页面、关掉再打开都在。</p>
+
+<h2><span class="n">10</span>看不清楚？调一下画质</h2>
+
+<p>侧栏「画质调整」有三个滑块：<b>亮度</b>、<b>对比度</b>、<b>饱和度</b>。晶体和背景颜色太接近的时候，拉一拉对比度会好找很多。</p>
+
+<ul>
+  <li><b>自动调</b> —— 工具看一眼这张照片的明暗，自己给一组数。不知道从哪下手就点它。</li>
+  <li><b>还原</b> —— 全部回到原样。</li>
+  <li><b>按住这里看原图</b> —— 按住不放，画面变回没调过的样子；松手又回到你调好的样子。用来对照。</li>
+</ul>
+
+<div class="note">
+  <p><span class="tag">只影响「看起来」和「导出的图片」。</span>
+  原图一个像素都不改，<b>也不影响任何测量数值</b>。调坏了点「还原」就行。</p>
+</div>
+
+<h2><span class="n">11</span>导出图片</h2>
+
+<p>侧栏最下面「导出」那一栏，从上到下就是导出前的几件事。</p>
+
+<h3>要不要裁一下</h3>
+
+<p>拍照时为了把孔拍全，往往取景取得比较大，晶体只占中间一小块。勾上<b>「裁剪」</b>，就能只导出晶体周围那部分。</p>
+
+<figure>
+<svg viewBox="0 0 560 300" role="img" aria-label="裁剪框示意图">
+  <rect x="20" y="20" width="520" height="260" rx="4" fill="#241f18"/>
+  <!-- 框外压暗 -->
+  <path d="M20 20 H540 V280 H20 Z M120 80 H420 V240 H120 Z" fill="#0a0907" fill-opacity=".62" fill-rule="evenodd"/>
+  <!-- 裁剪框 -->
+  <rect x="120" y="80" width="300" height="160" fill="none" stroke="#fff" stroke-width="2" stroke-dasharray="9 6"/>
+  <!-- 八个白点 -->
+  <g fill="#fff" stroke="#0b0a08" stroke-width="2">
+    <circle cx="120" cy="80" r="5.5"/><circle cx="270" cy="80" r="5.5"/><circle cx="420" cy="80" r="5.5"/>
+    <circle cx="120" cy="160" r="5.5"/><circle cx="420" cy="160" r="5.5"/>
+    <circle cx="120" cy="240" r="5.5"/><circle cx="270" cy="240" r="5.5"/><circle cx="420" cy="240" r="5.5"/>
+  </g>
+  <!-- 里面的晶体和线 -->
+  <path d="M210 130 q34 -28 74 -16 q38 11 48 38 q10 26 -18 42 q-32 18 -74 10 q-42 -8 -50 -36 q-6 -24 20 -38 Z"
+        fill="#c9c2b2" opacity=".82"/>
+  <line x1="185" y1="168" x2="355" y2="150" stroke="#e0a63c" stroke-width="2"/>
+  <circle cx="185" cy="168" r="4" fill="#e0a63c" stroke="#0b0a08" stroke-width="1.6"/>
+  <circle cx="355" cy="150" r="4" fill="#e0a63c" stroke="#0b0a08" stroke-width="1.6"/>
+  <text x="270" y="136" font-size="12" text-anchor="middle" fill="#e0a63c" font-family="Consolas,monospace"
+        stroke="#0b0a08" stroke-width="3" paint-order="stroke">128.4 μm</text>
+  <!-- 引注 -->
+  <line x1="418" y1="78" x2="410" y2="56" stroke="#a9741a" stroke-width="1.1"/>
+  <text x="404" y="52" font-size="11" text-anchor="end" fill="#e0a63c"
+        font-family="Microsoft YaHei UI,sans-serif">拖这 8 个白点改大小</text>
+  <line x1="300" y1="244" x2="300" y2="260" stroke="#a9741a" stroke-width="1.1"/>
+  <text x="300" y="272" font-size="11" text-anchor="middle" fill="#e0a63c"
+        font-family="Microsoft YaHei UI,sans-serif">拖框里面挪位置</text>
+  <text x="70" y="150" font-size="11" fill="#8c8478" font-family="Microsoft YaHei UI,sans-serif"
+        transform="rotate(-90 70 150)" text-anchor="middle">框外不会被导出</text>
+</svg>
+<figcaption>
+  <b>勾上「裁剪」→ 在图上按住左键拖出要保留的范围 → 拖 8 个白点微调 → 点「裁好了」。</b>
+  框外面会压暗，一眼就能看出哪些不会被导出。<br>
+  拖框里面可以整体挪位置。<b>没点「裁好了」就退出的话，这次调整不算数。</b>
+</figcaption>
+</figure>
+
+<ul>
+  <li><b>快速裁剪</b>下拉框里可以直接选 <b>「聚焦 #N」</b> —— 框会自动套在那条测量线周围，一步到位。选「不裁剪（整张）」就回到原图。</li>
+  <li>打开裁剪的时候，<b>圆和十字这些辅助线会藏起来</b>，这样你看到的就是裁完的样子。</li>
+  <li>「回到原图」按钮随时能把框去掉。</li>
+</ul>
+
+<div class="note warn">
+  <p><span class="tag">裁完就看不见标定圆了。</span>
+  长度照样算得对（比例尺是按每张照片单独存的），但圆看不见就没法再拖它重新标定。
+  想重新标定，先点<b>「回到原图」</b>把框去掉。</p>
+</div>
+
+<h3>标尺放哪、导多大</h3>
+
+<table>
+  <thead><tr><th>选项</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td><b>标尺位置</b></td>
+        <td>右下 / 左下 / 右上 / 左上。默认右下。挑一个不压住晶体的角。</td></tr>
+    <tr><td><b>输出倍率</b></td>
+        <td>1×（原尺寸）/ 2× / 4×（推荐）。<b>4× 出来最清楚</b>，标注和照片都够利落。
+            要是这张图太大、4× 存不下，工具会自动降到装得下的倍率，不会报错让你白忙。</td></tr>
+  </tbody>
+</table>
+
+<div class="note">
+  <p><span class="tag">标尺一定会保留。</span>
+  没有标尺的图，别人没法判断大小 —— 所以不管怎么裁、怎么设，导出的图上都带着标尺。</p>
+</div>
+
+<h3>两个导出按钮</h3>
+
+<ul>
+  <li><b>导出图片</b> —— 出一个 PNG。你在屏幕上看到什么样，它就是什么样（裁剪、标尺位置、字号、线宽、画质调整全都带上）。</li>
+  <li><b>导出表格</b> —— 把<b>这张照片</b>上所有测量记录导成一个 CSV 表格，Excel 能直接打开。文件名是「照片名_测量记录.csv」。</li>
+</ul>
+
+<h2><span class="n">12</span>图库页：照片都在这儿</h2>
+
+<p>点测量页左上角的<b>「图库」</b>进来。这张页面上是工具里所有照片。</p>
+
+<h3>找照片</h3>
+<ul>
+  <li><b>搜名字</b> —— 顶栏左边那个搜索框，打字就筛。</li>
+  <li><b>排序</b> —— 按导入时间或名字排。</li>
+  <li><b>只看已测量 / 未测量</b> —— 忘了哪张还没量，用这个筛。</li>
+</ul>
+<p>点任意一张卡片就进测量页开始量。</p>
+
+<h3>文件夹（左边那一列）</h3>
+<p>照片可以归类到文件夹里，比如按样品分。底部五个按钮：<b>新建 / 改名 / 移动 / 复制 / 删除</b>。</p>
+<div class="note warn">
+  <p><span class="tag">删文件夹之前看一眼。</span>
+  弹窗会告诉你有多少张照片会受影响。拿不准就先<b>复制</b>，别直接删。</p>
+</div>
+
+<h3>一次处理好几张：选择模式</h3>
+<ol>
+  <li>点顶栏的<b>「选择」</b> —— 卡片左上角冒出勾选框。</li>
+  <li>点卡片勾选（这时点卡片是勾选，不会跳去测量页）。用<b>「全选本页」</b>或<b>「选中全部 N 张」</b>批量勾。</li>
+  <li>然后挑一个动作：
+    <ul>
+      <li><b>打标签</b> —— 给这批照片加上标记，方便以后再筛。</li>
+      <li><b>导出图片</b> —— 一次把这批照片全导出来。</li>
+      <li><b>归档…</b> —— 把这批照片放进文件夹。可以选「也放进这些文件夹」（原来在的都保留）
+          或「换成这些文件夹」（原来的一律取消）。默认是安全的那一边。</li>
+      <li><b>删除</b> —— 弹窗会先告诉你删掉几张、有多少条测量记录会一起没。</li>
+    </ul>
+  </li>
+  <li>点<b>「退出」</b>或者按 <kbd>Esc</kbd> 回到普通模式。</li>
+</ol>
+
+<h2><span class="n">13</span>手机传图：拍完直接传进电脑</h2>
+
+<figure>
+<svg viewBox="0 0 660 292" role="img" aria-label="手机传图示意图：电脑出示二维码，手机扫码上传">
+  <!-- 电脑 -->
+  <rect x="18" y="40" width="176" height="112" rx="6" fill="#1f1c16" stroke="#4a4436" stroke-width="1.5"/>
+  <rect x="30" y="52" width="152" height="88" rx="3" fill="#0e0d0a"/>
+  <rect x="40" y="60" width="52" height="15" rx="3" fill="#e0a63c"/>
+  <text x="66" y="71" font-size="9.5" text-anchor="middle" fill="#17150f"
+        font-family="Microsoft YaHei UI,sans-serif" font-weight="600">手机传图</text>
+  <rect x="98" y="60" width="76" height="15" rx="3" fill="#2a261d" stroke="#4a4436"/>
+  <rect x="40" y="82" width="134" height="50" rx="2" fill="#2a261d"/>
+  <path d="M86 178 h40 v8 h-40 z" fill="#4a4436"/>
+  <path d="M70 190 h72 v5 h-72 z" fill="#4a4436"/>
+  <text x="106" y="216" font-size="11" text-anchor="middle" fill="#6d6558"
+        font-family="Microsoft YaHei UI,sans-serif">电脑</text>
+
+  <!-- 二维码 -->
+  <rect x="268" y="62" width="124" height="124" rx="4" fill="#fbf8f3"/>
+  <g fill="#17150f">
+    <rect x="276" y="70" width="30" height="30"/><rect x="281" y="75" width="20" height="20" fill="#fbf8f3"/>
+    <rect x="286" y="80" width="10" height="10"/>
+    <rect x="354" y="70" width="30" height="30"/><rect x="359" y="75" width="20" height="20" fill="#fbf8f3"/>
+    <rect x="364" y="80" width="10" height="10"/>
+    <rect x="276" y="148" width="30" height="30"/><rect x="281" y="153" width="20" height="20" fill="#fbf8f3"/>
+    <rect x="286" y="158" width="10" height="10"/>
+    <path d="M315 70 h6 v6 h-6 z M328 70 h6 v6 h-6 z M341 76 h6 v6 h-6 z M315 83 h6 v6 h-6 z
+             M334 89 h6 v6 h-6 z M347 83 h6 v6 h-6 z M356 101 h6 v6 h-6 z M369 108 h6 v6 h-6 z
+             M315 102 h6 v6 h-6 z M328 108 h6 v6 h-6 z M341 115 h6 v6 h-6 z M315 121 h6 v6 h-6 z
+             M334 128 h6 v6 h-6 z M356 134 h6 v6 h-6 z M369 141 h6 v6 h-6 z M315 141 h6 v6 h-6 z
+             M328 148 h6 v6 h-6 z M347 148 h6 v6 h-6 z M360 155 h6 v6 h-6 z M334 162 h6 v6 h-6 z
+             M369 162 h6 v6 h-6 z M315 162 h6 v6 h-6 z"/>
+  </g>
+  <text x="330" y="216" font-size="11" text-anchor="middle" fill="#6d6558"
+        font-family="Microsoft YaHei UI,sans-serif">手机扫这个码</text>
+
+  <!-- 手机 -->
+  <rect x="470" y="34" width="104" height="172" rx="12" fill="#1f1c16" stroke="#4a4436" stroke-width="1.5"/>
+  <rect x="480" y="48" width="84" height="144" rx="4" fill="#0e0d0a"/>
+  <rect x="492" y="58" width="60" height="15" rx="3" fill="#2a261d"/>
+  <text x="522" y="69" font-size="9" text-anchor="middle" fill="#ede8de"
+        font-family="Microsoft YaHei UI,sans-serif">选照片</text>
+  <g fill="#2a261d">
+    <rect x="492" y="80" width="28" height="28"/><rect x="524" y="80" width="28" height="28"/>
+    <rect x="492" y="112" width="28" height="28"/><rect x="524" y="112" width="28" height="28"/>
+  </g>
+  <rect x="492" y="150" width="60" height="18" rx="3" fill="#e0a63c"/>
+  <text x="522" y="163" font-size="9.5" text-anchor="middle" fill="#17150f"
+        font-family="Microsoft YaHei UI,sans-serif" font-weight="600">上传</text>
+  <text x="522" y="228" font-size="11" text-anchor="middle" fill="#6d6558"
+        font-family="Microsoft YaHei UI,sans-serif">手机</text>
+
+  <!-- 箭头 -->
+  <defs>
+    <marker id="ar3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#a9741a"/>
+    </marker>
+  </defs>
+  <path d="M200 96 H258" stroke="#a9741a" stroke-width="1.6" marker-end="url(#ar3)"/>
+  <path d="M398 96 H460" stroke="#a9741a" stroke-width="1.6" marker-end="url(#ar3)"/>
+  <!-- 回传箭头绕到底下走，别从二维码上穿过去 -->
+  <path d="M490 210 V 252 H 194 V 160" stroke="#a9741a" stroke-width="1.6" stroke-dasharray="6 5"
+        marker-end="url(#ar3)" fill="none"/>
+  <g font-family="Consolas,monospace" font-size="11" font-weight="700" text-anchor="middle">
+    <circle cx="229" cy="78" r="9.5" fill="#a9741a"/><text x="229" y="82" fill="#fff">1</text>
+    <circle cx="429" cy="78" r="9.5" fill="#a9741a"/><text x="429" y="82" fill="#fff">2</text>
+    <circle cx="330" cy="252" r="9.5" fill="#a9741a"/><text x="330" y="256" fill="#fff">3</text>
+  </g>
+  <text x="229" y="118" font-size="10" text-anchor="middle" fill="#6d6558"
+        font-family="Microsoft YaHei UI,sans-serif">点开弹窗</text>
+  <text x="429" y="118" font-size="10" text-anchor="middle" fill="#6d6558"
+        font-family="Microsoft YaHei UI,sans-serif">扫码打开</text>
+  <text x="330" y="276" font-size="11" text-anchor="middle" fill="#6d6558"
+        font-family="Microsoft YaHei UI,sans-serif">照片传回电脑</text>
+</svg>
+<figcaption>
+  <b>① 电脑上图库页点「手机传图」→ ② 手机扫码 → ③ 在手机上拍照/选照片、填好编号和孔位。</b>
+  手机队列传完的照片<b>直接进图库</b>：名字就是你在手机上填的，文件夹就是电脑上点「手机传图」时所在的那个。
+</figcaption>
+</figure>
+
+<h3>前提：手机和电脑在同一个网络</h3>
+
+<p>最省事的办法：<b>用手机开热点，让电脑连上这个热点</b>。这样两边肯定在同一个网里。</p>
+
+<div class="note">
+  <p><span class="tag">传图不花流量。</span>
+  照片是从手机直接走到电脑的，走的是局域网，<b>上传本身不消耗手机流量</b>。
+  会花流量的是：电脑连上手机热点之后的其它上网（浏览器、微信、系统更新）。</p>
+</div>
+
+<h3>具体步骤</h3>
+
+<ol>
+  <li><b>先在电脑上图库进入要放的文件夹</b>，再点顶栏<b>「手机传图」</b> —— 手机上这批照片就默认放进这个文件夹。</li>
+  <li>弹窗里出现二维码，下面还写着一行网址。<b>口子会开 2 小时</b>，弹窗上写着还剩多久。</li>
+  <li>手机连上同一个 WiFi，用相机或微信扫这个码 —— 手机会打开一个网页。</li>
+  <li>在手机上拍照或选照片，填好编号和孔位；有网就点上传，没网就先留着（见下一节）。</li>
+</ol>
+
+<h3>晶体房没网？先拍先存，出来自动补传</h3>
+<p>手机页面上写着「选好照片先存在手机里，填好编号和孔位；回到有网的地方，这个页面会自动一张张传到电脑」。
+这就是给晶体房弱网准备的：<b>拍一张、填一张、先存手机</b>，走到有网的地方再自动传。</p>
+<ol>
+  <li>电脑上图库先进入要放的文件夹，再点「手机传图」，手机扫码打开页面。这个窗口要一直开着（最长 2 小时）。</li>
+  <li>在手机上点<b>「拍照 / 选照片」</b>。每拍一张，下面就多一行「待上传」。</li>
+  <li>在那一行填<b>编号</b>、选<b>行 / 列 / 第几个孔</b>。编号 + 孔位会拼成照片名字（比如 <code>50-PEG-G-8-1</code>）。</li>
+  <li>没网也没关系：照片已经存在手机里，状态会写「等有网自动传」。<b>不要把手机浏览器关掉，也不要清理浏览器数据。</b></li>
+  <li>有网时把手机页面放在前台，它会自动一张张传；也可以点底部<b>「现在全部传」</b>。
+      传完直接进图库，<b>「传送记录」里显示的就是你填的名字</b>。</li>
+</ol>
+<div class="note">
+  <p><span class="tag">待上传列表里点一下缩略图，可以全屏看大图。</span>
+  传之前想确认哪张填错了，点开看一眼；觉得不对可以按 <b>✕</b> 删掉重拍。</p>
+</div>
+<div class="note warn">
+  <p><span class="tag">手机队列跟着网址走。</span>
+  电脑换了 WiFi、插了网线或换了端口，手机上的旧页面就找不到队列了 —— <b>回办公室先传完，别攒到第二天</b>。
+  电脑上的「手机传图」窗口过了 2 小时会关；回去重新点一次「手机传图」，手机扫新码打开，队列还在，会接着传。</p>
+  <p>网页里拍的照片<b>不在 iPhone 相册里</b>；传上去之前，手机浏览器里是唯一一份。别用无痕模式，也别清理浏览器数据。</p>
+</div>
+<p><b>能存多少张？</b>一般三四十张没问题；手机空间不够时，页面会提示「先把已经拍的传上去，再来拍」。</p>
+
+<p>二维码旁边通常还有一个下拉框，写着<b>「手机连不上？换下面这张网卡再试」</b>。
+电脑上装过 VPN、WSL、虚拟机的话会有好几张网卡，第一张不一定对 —— 换个地址，二维码跟着一起换。</p>
+
+<h3>连不上怎么办</h3>
+
+<p>按这个顺序查，一般前两条就好了：</p>
+
+<ol>
+  <li><b>弹窗是刚打开的吗？</b> —— 不是就关掉弹窗，重新点一次「手机传图」。</li>
+  <li><b>手机和电脑是同一个 WiFi 吗？</b> —— 手机开着流量、连的是 4G/5G，就一定连不上。
+      手机连的 WiFi 名字要和电脑连的一模一样。</li>
+  <li><b>换个网卡试试</b> —— 弹窗里那个下拉框，换一张再看。</li>
+  <li><b>防火墙</b> —— 第一次启动时如果点了「取消」，Windows 就没放行。补救：
+      控制面板 → Windows Defender 防火墙 → 高级设置 → 入站规则 → 新建规则 →
+      程序 → 选 <code>D:\anaconda3\python.exe</code> → 允许连接 → <b>只勾「专用网络」</b>。</li>
+  <li><b>WiFi 本身不让设备互通</b> —— 有些单位/访客 WiFi 会禁止手机和电脑互相访问，怎么设都不通。
+      换成手机开热点，电脑连热点，立刻就好。</li>
+</ol>
+
+<div class="note warn">
+  <p><span class="tag">换了网络，一定要重开一次弹窗。</span>
+  网址是<b>每次打开弹窗的那一刻现算的</b>。换了 WiFi、插了网线、开了 VPN，地址就变了 ——
+  这时候扫之前那张旧二维码必然连不上。</p>
+  <p>正确做法：<b>关掉弹窗 → 重新点「手机传图」→ 扫新出来的码。</b>
+  工具不用重启。</p>
+</div>
+
+<div class="note warn">
+  <p><span class="tag">重启工具之后，要重新点一次「手机传图」。</span>
+  那个「开 2 小时」的口子是跟着工具运行的，工具一关就没了。
+  忘了点的话，手机上只会看到一句「这个地址只能在电脑上打开」，看不出是没开开关。</p>
+</div>
+
+<h2><span class="n">14</span>快捷键和鼠标手势速查</h2>
+
+<div class="cols2">
+<div>
+<h4>测量页</h4>
+<table>
+  <tbody>
+    <tr><td><b>滚轮</b></td><td>放大 / 缩小（以鼠标位置为中心）</td></tr>
+    <tr><td><b>中键拖</b> 或 <b>右键拖</b></td><td>挪照片</td></tr>
+    <tr><td><b>双击</b></td><td>复位视图</td></tr>
+    <tr><td><b>左键在空白处拖</b></td><td>画一条测量线</td></tr>
+    <tr><td><b>左键拖控制点</b></td><td>改标定圆</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<b>左键拖数字</b></td><td>挪长度标签</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<b>左键拖标尺</b></td><td>挪标尺</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd></td><td>撤销</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd></td><td>重做</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>V</kbd></td><td>粘贴导入一张照片</td></tr>
+    <tr><td><b>拖文件到画布</b></td><td>导入照片</td></tr>
+  </tbody>
+</table>
+</div>
+<div>
+<h4>图库页</h4>
+<table>
+  <tbody>
+    <tr><td><kbd>Esc</kbd></td><td>关掉弹窗；退出选择模式</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>V</kbd></td><td>粘贴导入</td></tr>
+    <tr><td><b>拖文件到页面</b></td><td>导入照片</td></tr>
+    <tr><td><b>点卡片</b></td><td>进测量页量这张</td></tr>
+    <tr><td><b>点卡片上的「归档…」</b></td><td>把这张放进文件夹</td></tr>
+    <tr><td><b>点卡片上的「标签…」</b></td><td>给这张加标记</td></tr>
+    <tr><td><kbd>Enter</kbd></td><td>改名输入框里＝确认</td></tr>
+  </tbody>
+</table>
+
+<h4>贴士</h4>
+<ul>
+  <li>照片量到一半刷新页面<b>不会丢工作</b> —— 打开的是哪张、缩放到哪、圆、线、框选、导出设置，全都在。</li>
+  <li>侧栏最小宽度有限，名字太长会被截断，鼠标停上去能看全。</li>
+</ul>
+</div>
+</div>
+
+<h2><span class="n">15</span>出问题了怎么办</h2>
+
+<table>
+  <thead><tr><th>现象</th><th>怎么办</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><b>页面打不开、白屏</b></td>
+      <td>先看看那个黑窗口还在不在。不在了就重新双击 <code>启动.bat</code>。</td>
+    </tr>
+    <tr>
+      <td><b>更新后页面还是旧样子</b><br>（比如下拉框还显示文件夹名）</td>
+      <td>按 <kbd>Ctrl</kbd>+<kbd>F5</kbd> 强制刷新；还不行就关掉标签页重新打开。
+          浏览器会缓存旧页面，服务端其实已经是新版本。</td>
+    </tr>
+    <tr>
+      <td><b>提示「这个功能在当前运行的版本里没有」</b></td>
+      <td>有个<b>旧版本</b>的工具还在跑。关掉那个黑窗口，重新双击 <code>启动.bat</code>。</td>
+    </tr>
+    <tr>
+      <td><b>照片读不出来</b></td>
+      <td>格式不支持，或者文件本身是坏的。支持 JPG / PNG / TIF / BMP。<br>
+          如果是 iPhone 拍的 <b>HEIC</b>，工具读不了 ——
+          把手机「设置 → 相机 → 格式」改成<b>「兼容性最佳」</b>再拍，或者先转成 JPG。</td>
+    </tr>
+    <tr>
+      <td><b>量出来的数看着不对</b></td>
+      <td>按顺序查：① 侧栏「点样孔直径」是不是 3.4（或者你自己板子的数）；
+          ② 标定圆有没有套准孔，有没有对准长轴；③ 这条线是不是量在晶体两头。</td>
+    </tr>
+    <tr>
+      <td><b>自动放的圆跑到液滴或旁边的孔上</b></td>
+      <td>直接拖到孔上就行。自动圆只是起点，不是最终标定；完整孔的识别已经改善，
+          但仍要按第 04 节自己核对一遍。</td>
+    </tr>
+    <tr>
+      <td><b>手机扫码打不开网页</b></td>
+      <td>见第 13 节「连不上怎么办」，五步挨个试。</td>
+    </tr>
+    <tr>
+      <td><b>手机离线拍的照片没传上去</b></td>
+      <td>回电脑重新点「手机传图」，手机扫新码打开；照片还在手机浏览器里，会接着传。
+          <b>别清理 Safari 数据、别用无痕模式。</b>电脑换了网络/端口后，旧地址的队列看不到 ——
+          回办公室先传完。</td>
+    </tr>
+    <tr>
+      <td><b>导出说图太大</b></td>
+      <td>工具会自动降档，一般不用管。实在要更大，就先框选裁小一点、或者把「输出倍率」调低一档。</td>
+    </tr>
+    <tr>
+      <td><b>删错了照片</b></td>
+      <td>照片文件本身挪到了 <code>data\trash\</code> 里，能从那儿找回来。
+          <b>但那张照片上的测量记录是真没了</b>，撤不回来。</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="note">
+  <p><span class="tag">一条通用的办法。</span>
+  这个工具出的大部分怪问题，都是「旧版本还在跑」或者「黑窗口关了」。
+  遇到说不清的情况，<b>关掉黑窗口 → 重新双击 启动.bat → 刷新一下网页</b>，
+  十有八九就好了。</p>
+</div>
+
+</div>
+</body>
+</html>
