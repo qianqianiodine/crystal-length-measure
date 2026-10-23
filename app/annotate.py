@@ -102,10 +102,11 @@ def style_for(h: int, w: int, *, scale: float | None = None,
         "d": d,
         "line_w": lw,
         "line_halo": max(lw + 1, int(round((line_w + pad) * d))),
-        # 页面 dot(p, 线宽×1.5, 本色, 线宽×0.8)：stroke 沿圆周居中，
-        # 所以看得见的本色半径是 1.1×线宽，深色外圈到 1.9×线宽。
-        "endpoint_r": max(1, int(round(line_w * 1.1 * d))),
-        "endpoint_ring": max(2, int(round(line_w * 1.9 * d))),
+        # 页面 dot(p, 线宽×0.9, 本色, 线宽×0.45)：stroke 沿圆周居中，
+        # 所以看得见的本色半径是 0.675×线宽，深色外圈到 1.125×线宽。
+        # （2026-10-23 用户嫌照片放大后端点那个球太大，从 1.1 / 1.9 缩下来的。）
+        "endpoint_r": max(1, int(round(line_w * 0.675 * d))),
+        "endpoint_ring": max(2, int(round(line_w * 1.125 * d))),
         "text_size": max(11, int(round(font_px * d))),
         # 页面 labelScreen()：抬升 = 20 × (字号/16)，字号调大标签跟着抬高
         "lift": int(round(PAGE_LABEL_LIFT * (font_px / PAGE_FONT) * d)),

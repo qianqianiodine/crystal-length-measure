@@ -697,10 +697,13 @@ function drawLines() {
     // 线 ≥2 时结果**正好还是 3.5**（跟改之前一像素不差），只有更细的档才收窄。
     halo(() => { ctx.beginPath(); ctx.moveTo(p1[0], p1[1]); ctx.lineTo(p2[0], p2[1]); },
          L.color, LINE_W, Math.min(3.5, LINE_W * 1.75));
-    // 两端的圆点和它那圈描边按**固定比例**跟着线宽走（半径 1.5 倍、描边 0.8 倍，
-    // 就是原来 3 / 4.5 / 2.5 那组数的比例）—— 不跟着走的话，线调细了圆点会显得特别突兀。
-    dot(p1, LINE_W * 1.5, L.color, LINE_W * 0.8);
-    dot(p2, LINE_W * 1.5, L.color, LINE_W * 0.8);
+    // 两端的圆点和它那圈描边按**固定比例**跟着线宽走 —— 不跟着走的话，线调细了
+    // 圆点会显得特别突兀。比例从原来的 1.5 / 0.8 收到 0.9 / 0.45（2026-10-23 用户
+    // 原话：「照片放大了，起始那个圆点太大，就看不到晶体和线了」）。圆点是照片的
+    // 一部分，跟着 uz() 一起缩放（导出才和屏幕一致），所以只能相对线宽把它做小：
+    // 深色外圈从 1.9×线宽收到 1.125×，正好比线本身的圆头略粗一点。
+    dot(p1, LINE_W * 0.9, L.color, LINE_W * 0.45);
+    dot(p2, LINE_W * 0.9, L.color, LINE_W * 0.45);
 
     const b = labelBox(L);
     if (picking) {
@@ -802,20 +805,32 @@ function drawPending() {
   const p1 = toS(d.x1, d.y1), p2 = toS(d.x2, d.y2);
   const px = Math.hypot(d.x2 - d.x1, d.y2 - d.y1);
 
+  // ⚠️ 下面这三个记号（起点十字、预览虚线、终点圆点）是**拖动中的临时标记**，
+  // 不会进导出图 —— 所以一律按**固定屏幕像素**画，**不过 uz()**。
+  // 跟着照片缩放的话，照片一放大它们就变成一大坨，正好盖住你要对准的那颗晶体
+  // （用户 2026-10-23 原话：「划线的时候起点和终点的那个很大，挡住我看晶体了」）。
+  // 画完的线上那两个圆点才是"照片的一部分"，跟着照片缩放（见 drawLines）。
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+
   // 起点：手指一按下就画出来，让你看见"锚在这儿了"
-  halo(() => {
-    ctx.beginPath();
-    ctx.moveTo(p1[0] - 7, p1[1]); ctx.lineTo(p1[0] + 7, p1[1]);
-    ctx.moveTo(p1[0], p1[1] - 7); ctx.lineTo(p1[0], p1[1] + 7);
-  }, '#ffffff', 1.5);
+  ctx.beginPath();
+  ctx.moveTo(p1[0] - 7, p1[1]); ctx.lineTo(p1[0] + 7, p1[1]);
+  ctx.moveTo(p1[0], p1[1] - 7); ctx.lineTo(p1[0], p1[1] + 7);
+  ctx.strokeStyle = INK; ctx.lineWidth = 5; ctx.stroke();
+  ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1.5; ctx.stroke();
   if (px < 0.5) return;        // 还没拖动，只有锚点
 
   ctx.save();
   ctx.setLineDash([7, 5]);
-  halo(() => { ctx.beginPath(); ctx.moveTo(p1[0], p1[1]); ctx.lineTo(p2[0], p2[1]); },
-       '#ffffff', 2.5);
+  ctx.beginPath(); ctx.moveTo(p1[0], p1[1]); ctx.lineTo(p2[0], p2[1]);
+  ctx.strokeStyle = INK; ctx.lineWidth = 6; ctx.stroke();
+  ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2.5; ctx.stroke();
   ctx.restore();
-  dot(p2, 4.5, '#ffffff', 2.5);
+
+  // 终点：固定大小（半径 4.5 + 2.5 描边，就是改之前 UIZ=1 时的大小）
+  ctx.beginPath(); ctx.arc(p2[0], p2[1], 4.5, 0, Math.PI * 2);
+  ctx.fillStyle = '#ffffff'; ctx.fill();
+  ctx.lineWidth = 2.5; ctx.strokeStyle = INK; ctx.stroke();
 
   if (S.umpp) {
     label(fmtLen(px * S.umpp), (p1[0] + p2[0]) / 2,

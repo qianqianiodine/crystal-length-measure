@@ -63,7 +63,10 @@ SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}
 #   launch.py 把"先关掉那个黑窗口再开"喊出来。
 # 25 → 26（2026-10-23）：新增 POST /api/images/export-labels（导出照片名字清单）。
 #   老进程没有这个接口，新页面点「导出标签」会静默 404、一句提示都没有。
-API_VERSION = 26
+# 26 → 27（2026-10-23）：测量线两端的圆点缩小（1.5/0.8 → 0.9/0.45 倍线宽）。
+#   `annotate.py` 跟着改了 —— 老进程画图库缩略图/导出图还是原来的大圆球，
+#   跟测量页上看到的对不上，用户会以为"改了没生效"。
+API_VERSION = 27
 
 
 def ensure_dirs() -> None:

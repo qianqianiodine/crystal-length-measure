@@ -252,8 +252,8 @@ def test_style_matches_the_page_at_canvas_scale():
     assert st["line_halo"] == 6       # 页面 halo() 的 2 + 3.5 = 5.5 → 6
     assert st["text_size"] == 16      # 页面 FONT_BASE
     assert st["lift"] == 20           # 页面 LABEL_LIFT（默认字号时）
-    assert st["endpoint_r"] == 2      # 页面 dot 半径 1.5×2，看得见的本色 1.1×2
-    assert st["endpoint_ring"] == 4   # 深色外圈 1.9×2 = 3.8 → 4
+    assert st["endpoint_r"] == 1      # 页面 dot 半径 0.9×2，看得见的本色 0.675×2
+    assert st["endpoint_ring"] == 2   # 深色外圈 1.125×2 = 2.25 → 2
     assert st["bar_tick"] == 7        # 页面 BAR_TICK
     assert st["bar_w"] in (2, 3)      # 页面 2.5
     assert st["bar_halo"] == 6        # 页面 2.5 + 3.5
